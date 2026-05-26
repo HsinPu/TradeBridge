@@ -15,7 +15,7 @@ python -m tradebridge.cli summary
 python -m tradebridge.cli candles --symbol BTCUSDT --timeframe 1m --limit 10
 ```
 
-The collect command writes candles into `data/tradebridge.db`.
+The collect command writes candles into `data/tradebridge.db`. If the database already has candles for the symbol/timeframe, collection starts after the latest stored candle and fills missing tail data in batches.
 
 ## Development
 

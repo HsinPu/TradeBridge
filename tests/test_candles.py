@@ -1,7 +1,11 @@
 import unittest
 
 from tradebridge.exchange.models import Candle
-from tradebridge.market_data.candles import validate_symbol, validate_timeframe
+from tradebridge.market_data.candles import (
+    timeframe_to_milliseconds,
+    validate_symbol,
+    validate_timeframe,
+)
 
 
 class CandleTests(unittest.TestCase):
@@ -33,6 +37,14 @@ class CandleTests(unittest.TestCase):
     def test_validate_timeframe_rejects_unknown_value(self) -> None:
         with self.assertRaises(ValueError):
             validate_timeframe("7m")
+
+    def test_timeframe_to_milliseconds(self) -> None:
+        self.assertEqual(timeframe_to_milliseconds("1m"), 60_000)
+        self.assertEqual(timeframe_to_milliseconds("1h"), 3_600_000)
+
+    def test_timeframe_to_milliseconds_rejects_monthly(self) -> None:
+        with self.assertRaises(ValueError):
+            timeframe_to_milliseconds("1M")
 
 
 if __name__ == "__main__":

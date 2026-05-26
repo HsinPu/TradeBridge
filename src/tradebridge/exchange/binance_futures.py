@@ -17,18 +17,28 @@ class BinanceFuturesClient:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
 
-    def get_klines(self, symbol: str, interval: str, limit: int = 1000) -> list[Candle]:
+    def get_klines(
+        self,
+        symbol: str,
+        interval: str,
+        limit: int = 1000,
+        start_time: int | None = None,
+        end_time: int | None = None,
+    ) -> list[Candle]:
         if limit <= 0 or limit > 1500:
             raise ValueError("limit must be between 1 and 1500")
 
-        query = urlencode(
-            {
-                "symbol": symbol.upper(),
-                "interval": interval,
-                "limit": limit,
-            }
-        )
-        url = f"{self.base_url}/fapi/v1/klines?{query}"
+        params = {
+            "symbol": symbol.upper(),
+            "interval": interval,
+            "limit": limit,
+        }
+        if start_time is not None:
+            params["startTime"] = start_time
+        if end_time is not None:
+            params["endTime"] = end_time
+
+        url = f"{self.base_url}/fapi/v1/klines?{urlencode(params)}"
         payload = self._get_json(url)
         return [Candle.from_binance_row(row) for row in payload]
 
