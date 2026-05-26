@@ -83,8 +83,20 @@ class CandleSeriesSummary:
 
 
 class SqliteStore:
-    def __init__(self, database_path: Path):
+    def __init__(self, database_path: Path, busy_timeout_ms: int = 5000):
         self.database_path = database_path
+        self.busy_timeout_ms = busy_timeout_ms
+
+    def connect(self) -> sqlite3.Connection:
+        self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(
+            self.database_path,
+            timeout=self.busy_timeout_ms / 1000,
+        )
+        connection.execute(f"PRAGMA busy_timeout = {self.busy_timeout_ms}")
+        connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute("PRAGMA foreign_keys = ON")
+        return connection
 
     def write_candles(
         self,
@@ -99,8 +111,7 @@ class SqliteStore:
         historical_candles = candles[:-1]
         latest_candle = candles[-1] if candles else None
 
-        self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(self.database_path)
+        connection = self.connect()
         try:
             self.ensure_schema(connection)
             inserted_count, historical_updated_count = self.write_historical_candles(
@@ -322,7 +333,7 @@ class SqliteStore:
         )
 
     def list_candle_series(self) -> list[CandleSeriesSummary]:
-        connection = sqlite3.connect(self.database_path)
+        connection = self.connect()
         try:
             self.ensure_schema(connection)
             rows = connection.execute(
@@ -370,7 +381,7 @@ class SqliteStore:
         normalized_symbol = validate_symbol(symbol)
         normalized_interval = validate_timeframe(interval)
 
-        connection = sqlite3.connect(self.database_path)
+        connection = self.connect()
         try:
             self.ensure_schema(connection)
             rows = connection.execute(
@@ -428,8 +439,7 @@ class SqliteStore:
         normalized_symbol = validate_symbol(symbol)
         normalized_interval = validate_timeframe(interval)
 
-        self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(self.database_path)
+        connection = self.connect()
         try:
             self.ensure_schema(connection)
             row = connection.execute(
@@ -460,8 +470,7 @@ class SqliteStore:
         normalized_symbol = validate_symbol(symbol)
         normalized_interval = validate_timeframe(interval)
 
-        self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(self.database_path)
+        connection = self.connect()
         try:
             self.ensure_schema(connection)
             return self.count_candles(

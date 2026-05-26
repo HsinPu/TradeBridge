@@ -8,6 +8,21 @@ from tradebridge.storage.sqlite_store import SqliteStore
 
 
 class SqliteStoreTests(unittest.TestCase):
+    def test_connect_configures_sqlite_for_read_write_cli_usage(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SqliteStore(Path(temp_dir) / "tradebridge.db")
+            connection = store.connect()
+            try:
+                busy_timeout = connection.execute("PRAGMA busy_timeout").fetchone()[0]
+                journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
+                foreign_keys = connection.execute("PRAGMA foreign_keys").fetchone()[0]
+            finally:
+                connection.close()
+
+        self.assertEqual(busy_timeout, 5000)
+        self.assertEqual(journal_mode.lower(), "wal")
+        self.assertEqual(foreign_keys, 1)
+
     def test_write_candles_inserts_new_rows(self) -> None:
         candle = make_candle(open_time=1710000000000, close_time=1710000059999)
 
