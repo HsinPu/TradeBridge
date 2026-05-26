@@ -40,6 +40,17 @@ class CandleWriteResult:
     total_count: int
 
 
+@dataclass(frozen=True)
+class CandleSeriesSummary:
+    exchange: str
+    market_type: str
+    symbol: str
+    timeframe: str
+    candle_count: int
+    first_open_time: int
+    last_open_time: int
+
+
 class SqliteStore:
     def __init__(self, database_path: Path):
         self.database_path = database_path
@@ -59,7 +70,7 @@ class SqliteStore:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(self.database_path)
         try:
-            connection.execute(SCHEMA)
+            self.ensure_schema(connection)
             connection.executemany(
                 """
                 INSERT INTO candles (
@@ -118,6 +129,103 @@ class SqliteStore:
 
         return CandleWriteResult(fetched_count=len(candles), total_count=total_count)
 
+    def list_candle_series(self) -> list[CandleSeriesSummary]:
+        connection = sqlite3.connect(self.database_path)
+        try:
+            self.ensure_schema(connection)
+            rows = connection.execute(
+                """
+                SELECT
+                    exchange,
+                    market_type,
+                    symbol,
+                    timeframe,
+                    COUNT(*) AS candle_count,
+                    MIN(open_time) AS first_open_time,
+                    MAX(open_time) AS last_open_time
+                FROM candles
+                GROUP BY exchange, market_type, symbol, timeframe
+                ORDER BY exchange, market_type, symbol, timeframe
+                """
+            ).fetchall()
+        finally:
+            connection.close()
+
+        return [
+            CandleSeriesSummary(
+                exchange=str(row[0]),
+                market_type=str(row[1]),
+                symbol=str(row[2]),
+                timeframe=str(row[3]),
+                candle_count=int(row[4]),
+                first_open_time=int(row[5]),
+                last_open_time=int(row[6]),
+            )
+            for row in rows
+        ]
+
+    def get_recent_candles(
+        self,
+        exchange: str,
+        market_type: str,
+        symbol: str,
+        interval: str,
+        limit: int,
+    ) -> list[Candle]:
+        if limit <= 0:
+            raise ValueError("limit must be greater than 0")
+
+        normalized_symbol = validate_symbol(symbol)
+        normalized_interval = validate_timeframe(interval)
+
+        connection = sqlite3.connect(self.database_path)
+        try:
+            self.ensure_schema(connection)
+            rows = connection.execute(
+                """
+                SELECT
+                    open_time,
+                    open,
+                    high,
+                    low,
+                    close,
+                    volume,
+                    close_time,
+                    quote_asset_volume,
+                    number_of_trades,
+                    taker_buy_base_asset_volume,
+                    taker_buy_quote_asset_volume
+                FROM candles
+                WHERE exchange = ?
+                  AND market_type = ?
+                  AND symbol = ?
+                  AND timeframe = ?
+                ORDER BY open_time DESC
+                LIMIT ?
+                """,
+                (exchange, market_type, normalized_symbol, normalized_interval, limit),
+            ).fetchall()
+        finally:
+            connection.close()
+
+        candles = [
+            Candle(
+                open_time=int(row[0]),
+                open=str(row[1]),
+                high=str(row[2]),
+                low=str(row[3]),
+                close=str(row[4]),
+                volume=str(row[5]),
+                close_time=int(row[6]),
+                quote_asset_volume=str(row[7]),
+                number_of_trades=int(row[8]),
+                taker_buy_base_asset_volume=str(row[9]),
+                taker_buy_quote_asset_volume=str(row[10]),
+            )
+            for row in rows
+        ]
+        return list(reversed(candles))
+
     def count_candles(
         self,
         connection: sqlite3.Connection,
@@ -138,3 +246,6 @@ class SqliteStore:
             (exchange, market_type, symbol, interval),
         ).fetchone()
         return int(row[0])
+
+    def ensure_schema(self, connection: sqlite3.Connection) -> None:
+        connection.execute(SCHEMA)

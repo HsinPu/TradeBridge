@@ -11,9 +11,11 @@ logic are left for later versions.
 ```powershell
 $env:PYTHONPATH="src"
 python -m tradebridge.cli collect --symbol BTCUSDT --timeframe 1m --limit 1000
+python -m tradebridge.cli summary
+python -m tradebridge.cli candles --symbol BTCUSDT --timeframe 1m --limit 10
 ```
 
-The command writes candles into `data/tradebridge.db`.
+The collect command writes candles into `data/tradebridge.db`.
 
 ## Development
 
