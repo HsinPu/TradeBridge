@@ -10,12 +10,15 @@ logic are left for later versions.
 
 ```powershell
 $env:PYTHONPATH="src"
-python -m tradebridge.cli collect --symbol BTCUSDT --timeframe 1m --limit 1000
+python -m tradebridge.cli backfill --symbol BTCUSDT --timeframe 1m --start 2026-01-01 --end 2026-01-02
+python -m tradebridge.cli collect --symbol BTCUSDT --timeframe 1m
 python -m tradebridge.cli summary
 python -m tradebridge.cli candles --symbol BTCUSDT --timeframe 1m --limit 10
 ```
 
-The collect command writes candles into `data/tradebridge.db`. If the database already has candles for the symbol/timeframe, collection starts after the latest stored candle and fills missing tail data in batches.
+The backfill command fills a historical time range. The collect command only
+continues from the latest stored candle and brings the database up to date.
+Both commands write candles into `data/tradebridge.db`.
 
 ## Development
 
