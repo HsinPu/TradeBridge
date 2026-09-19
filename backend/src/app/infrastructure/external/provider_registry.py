@@ -35,21 +35,32 @@ class MarketDataProviderRegistry:
             self._providers.pop(normalize_provider(provider), None)
 
     def create_from_config(self, config: ProviderDataSourceConfig) -> MarketDataProvider:
+        """Probe a candidate endpoint without applying its unsaved rate settings."""
         with self._lock:
             provider = normalize_provider(config.provider)
-            if provider == "binance":
-                limiter = self._limiters.setdefault(provider, ProviderLimiter())
-                limiter.configure(config.rate_limit_weight_per_minute, config.cooldown_ms)
-                return BinanceMarketDataClient(
-                    base_url=config.api_base_url,
-                    timeout_seconds=config.timeout_seconds,
-                    limiter=limiter,
-                )
-            raise ValueError(f"Unsupported market data provider: {provider}.")
+            if provider not in self._limiters:
+                self._configure_limiter(self._get_data_source_config(provider))
+            return self._build_provider(config, self._limiters[provider])
+
+    def _configure_limiter(self, config: ProviderDataSourceConfig) -> ProviderLimiter:
+        # Keep consumed weight and Retry-After deadlines across saved configuration changes.
+        limiter = self._limiters.setdefault(config.provider, ProviderLimiter())
+        limiter.configure(config.rate_limit_weight_per_minute, config.cooldown_ms)
+        return limiter
+
+    @staticmethod
+    def _build_provider(config: ProviderDataSourceConfig, limiter: ProviderLimiter) -> MarketDataProvider:
+        if config.provider == "binance":
+            return BinanceMarketDataClient(
+                base_url=config.api_base_url,
+                timeout_seconds=config.timeout_seconds,
+                limiter=limiter,
+            )
+        raise ValueError(f"Unsupported market data provider: {config.provider}.")
 
     def _create_provider(self, provider: ProviderName) -> MarketDataProvider:
         config = self._get_data_source_config(provider)
-        return self.create_from_config(config)
+        return self._build_provider(config, self._configure_limiter(config))
 
     def _get_data_source_config(self, provider: ProviderName) -> ProviderDataSourceConfig:
         saved_config = (

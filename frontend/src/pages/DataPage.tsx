@@ -1365,6 +1365,9 @@ export function DataPage({ messages }: DataPageProps) {
     try {
       const job = await cancelCandleFetchJob(jobId);
       setFetching(job.status === "cancelling");
+      if (job.status === "cancelled") {
+        setDataLoadToken((current) => current + 1);
+      }
       setFetchProgress((current) => ({
         ...current,
         status: getProgressStatusFromJob(job.status),

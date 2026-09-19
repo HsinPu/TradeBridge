@@ -28,7 +28,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Initialize shared dependencies before worker threads can access them.
     get_candle_fetch_job_service()
     get_schedule_service()
-    jobs = JobRunner(store=get_job_execution_store(), service_factory=get_candle_fetch_job_service)
+    store = get_job_execution_store()
+    repaired_count = store.reconcile_cancelled_repairs()
+    logger.info("Cancelled repair gaps reconciled count=%s", repaired_count)
+    jobs = JobRunner(store=store, service_factory=get_candle_fetch_job_service)
     app.state.job_runner = jobs
     jobs.start()
     runner: ScheduleRunner | None = None

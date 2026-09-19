@@ -124,7 +124,7 @@ def update_provider_data_source(
 
     return ProviderDataSourceResponse.from_config(
         saved_config,
-        healthy=_check_provider_health_from_config(provider_registry, saved_config),
+        healthy=_check_provider_health(provider_registry, saved_config.provider),
     )
 
 

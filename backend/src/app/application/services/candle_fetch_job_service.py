@@ -438,6 +438,7 @@ class CandleFetchJobService:
                 job_id=job.id,
                 error_message=CANCELLED_BY_USER_MESSAGE,
             )
+            self._sync_data_gap_repair_status(cancelled_job)
             logger.info("fetch job cancelled job_id=%s previous_status=%s", job.id, job.status)
             return cancelled_job
 

@@ -44,6 +44,13 @@ the current state. Invalid transitions return 409. Tokens remain reserved until
 the worker acknowledges a control request, so another job cannot enter that market
 while the old HTTP call is outstanding.
 
+Cancelling an unclaimed gap-repair job updates its still-associated `repairing`
+gaps to `failed` in the same transaction, enabling another repair. Executing jobs
+keep their gaps in `repairing` until cancellation is acknowledged. Before workers
+start, an idempotent reconciliation repairs historical `repairing` gaps linked to
+cancelled jobs without an execution token. It preserves candle data, job links and
+cancellation reasons, and logs `Cancelled repair gaps reconciled count=...`.
+
 Expired running jobs return to pending; expired pausing/cancelling jobs become
 paused/cancelled. Three consecutive lease expirations without a committed batch
 fail the job. A committed batch clears that interruption counter. Terminal jobs
@@ -102,6 +109,12 @@ Weights verified against Binance's official documentation on 2026-09-19:
 This budget does not account for unrelated programs sharing the same public IP.
 
 ## Upgrade, verification and rollback
+
+Connection tests use the candidate URL and timeout but the saved/default shared
+rate budget. Unsaved rate settings never reconfigure live workers. Probe requests
+still consume shared weight and honor shared Retry-After deadlines. Saving settings
+refreshes the client and updates the existing limiter, preserving consumed weight
+and cooldown deadlines for both existing and new clients.
 
 1. Stop the old backend, then back up the database with SQLite's backup API (or
    copy the entire stopped Docker data volume, including any WAL files).

@@ -406,3 +406,97 @@ def test_maintenance_gate_blocks_concurrent_admission_and_reset_rejects_active(r
     with pytest.raises(DatabaseResetConflictError):
         service.reset_database(DatabaseResetCommand(scope="all", confirm="RESET", create_backup=False))
     assert rig.jobs.get(job.id) is not None
+
+
+@pytest.fixture
+def repair(rig):
+    from app.application.models.data_gap import DataGapCreate, DataGapRepairCommand
+    from app.infrastructure.persistence.sqlite_data_gap_repository import SQLiteDataGapRepository
+    gaps = SQLiteDataGapRepository(rig.path)
+    rig.service._data_gap_repository = gaps
+    gap = gaps.upsert_detected_many([DataGapCreate(
+        "binance", "spot", "BTC/USDT", "BTCUSDT", "1m", 0, 60000,
+        "1970-01-01T00:00:00+00:00", "1970-01-01T00:01:00+00:00", 2, None, "test")])[0]
+    command = DataGapRepairCommand(gap.id)
+    job = rig.service.create_data_gap_repair_job(command).job
+    return SimpleNamespace(gaps=gaps, gap=gap, command=command, job=job)
+
+
+@pytest.mark.parametrize("paused", [False, True])
+def test_cancel_unclaimed_repair_updates_gap_and_allows_retry(rig, repair, paused):
+    if paused:
+        rig.service.pause_job(repair.job.id)
+    rig.service.cancel_job(repair.job.id)
+    assert repair.gaps.get_gap(repair.gap.id).status == "failed"
+    next_job = rig.service.create_data_gap_repair_job(repair.command).job
+    assert next_job.id != repair.job.id
+    rig.service.cancel_job(repair.job.id)
+    gap = repair.gaps.get_gap(repair.gap.id)
+    assert (gap.status, gap.repair_job_id) == ("repairing", next_job.id)
+
+
+def test_cancel_repair_rolls_back_if_gap_update_fails(rig, repair, monkeypatch):
+    def fail(**kwargs):
+        raise RuntimeError("gap update failed")
+    monkeypatch.setattr(repair.gaps, "mark_repair_failed", fail)
+    with pytest.raises(RuntimeError, match="gap update failed"):
+        rig.service.cancel_job(repair.job.id)
+    assert rig.jobs.get(repair.job.id).status == "pending"
+    assert repair.gaps.get_gap(repair.gap.id).status == "repairing"
+
+
+@pytest.mark.parametrize("recover", [False, True])
+def test_running_repair_cancel_waits_for_acknowledgement(rig, repair, recover):
+    _, token = rig.store.claim("worker")
+    assert rig.service.cancel_job(repair.job.id).status == "cancelling"
+    assert repair.gaps.get_gap(repair.gap.id).status == "repairing"
+    if recover:
+        rig.clock[0] += 61
+        rig.store.recover()
+    else:
+        rig.service.run_job(repair.job.id, token=token)
+    assert rig.jobs.get(repair.job.id).status == "cancelled"
+    assert repair.gaps.get_gap(repair.gap.id).status == "failed"
+
+
+@pytest.mark.parametrize("job_status,gap_status,token,expected", [
+    ("cancelled", "repairing", None, 1),
+    ("running", "repairing", "active", 0),
+    ("paused", "repairing", None, 0),
+    ("cancelling", "repairing", "active", 0),
+    ("cancelled", "repairing", "active", 0),
+    ("cancelled", "resolved", None, 0),
+    ("missing", "repairing", None, 0),
+])
+def test_reconcile_only_stale_cancelled_repairs(rig, repair, job_status, gap_status, token, expected):
+    with connect_sqlite(rig.path) as db:
+        db.execute("UPDATE fetch_jobs SET status=?, execution_token=?, error_message='Cancelled by user.' WHERE id=?",
+                   (job_status, token, repair.job.id))
+        db.execute("UPDATE data_gaps SET status=?, repair_job_id=? WHERE id=?",
+                   (gap_status, "missing" if job_status == "missing" else repair.job.id, repair.gap.id))
+    assert rig.store.reconcile_cancelled_repairs() == expected
+    assert rig.store.reconcile_cancelled_repairs() == 0
+    gap = repair.gaps.get_gap(repair.gap.id)
+    assert gap.status == ("failed" if expected else gap_status)
+    if expected:
+        assert gap.reason == "Cancelled by user."
+        assert gap.repair_job_id == repair.job.id
+
+
+
+def test_startup_reconciles_before_starting_workers(rig, repair, monkeypatch):
+    from fastapi.testclient import TestClient
+    from app import main
+    from app.api.v1 import dependencies
+    from app.core.settings import Settings
+    from app.infrastructure.scheduler.job_runner import JobRunner
+    with connect_sqlite(rig.path) as db:
+        db.execute("UPDATE fetch_jobs SET status='cancelled' WHERE id=?", (repair.job.id,))
+    monkeypatch.setattr(main, "get_settings", lambda: Settings(database_path=rig.path, scheduler_enabled=False))
+    monkeypatch.setattr(dependencies, "get_candle_fetch_job_service", lambda: rig.service)
+    monkeypatch.setattr(dependencies, "get_schedule_service", lambda: None)
+    monkeypatch.setattr(dependencies, "get_job_execution_store", lambda: rig.store)
+    observed = []
+    monkeypatch.setattr(JobRunner, "start", lambda self: observed.append(repair.gaps.get_gap(repair.gap.id).status))
+    with TestClient(main.create_app()):
+        assert observed == ["failed"]

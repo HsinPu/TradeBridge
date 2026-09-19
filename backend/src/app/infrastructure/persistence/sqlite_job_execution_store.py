@@ -171,6 +171,19 @@ class SQLiteJobExecutionStore:
                 self._sync_gap(db, row["id"], status, reason)
             return len(rows)
 
+    def reconcile_cancelled_repairs(self) -> int:
+        """Repair historical cancellations before workers start; safe to repeat."""
+        with self.atomic() as db:
+            return db.execute("""UPDATE data_gaps SET status='failed',
+                reason=COALESCE(NULLIF((SELECT error_message FROM fetch_jobs
+                    WHERE id=data_gaps.repair_job_id), ''), 'Cancelled by user.'),
+                last_checked_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP,
+                resolved_at=NULL
+                WHERE status='repairing' AND EXISTS (
+                    SELECT 1 FROM fetch_jobs j WHERE j.id=data_gaps.repair_job_id
+                    AND j.status='cancelled' AND j.execution_token IS NULL
+                )""").rowcount
+
     def load_plan(self, job_id):
         with connect_sqlite(self._database_path) as db:
             row = db.execute("SELECT plan_json FROM fetch_jobs WHERE id=?", (job_id,)).fetchone()
