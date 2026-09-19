@@ -1,4 +1,6 @@
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from app.api.v1.job_submission import submit_job
+from app.application.ports.job_execution_store import JobConflict
+from fastapi import APIRouter, Header, Depends, HTTPException, Query, status
 
 from app.api.v1.dependencies import get_candle_fetch_job_service
 from app.application.services.candle_fetch_job_service import CandleFetchJobService
@@ -46,6 +48,8 @@ def list_candle_fetch_jobs(
             limit=limit,
             offset=offset,
         )
+    except JobConflict:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     responses = [CandleFetchJobResponse.from_job(job) for job in jobs]
@@ -70,6 +74,8 @@ def get_candle_fetch_job_summary(
             search=normalized_search,
             timezone_name=timezone_name,
         )
+    except JobConflict:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return CandleFetchJobSummaryResponse.from_summary(summary)
@@ -93,6 +99,8 @@ def get_candle_fetch_job_overview(
             search=normalized_search,
             recent_limit=recent_limit,
         )
+    except JobConflict:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return CandleFetchJobOverviewResponse.from_overview(overview)
@@ -101,15 +109,20 @@ def get_candle_fetch_job_overview(
 @router.post("", response_model=CandleFetchJobResponse, status_code=status.HTTP_202_ACCEPTED)
 def create_candle_fetch_job(
     request: CandleFetchJobCreateRequest,
-    background_tasks: BackgroundTasks,
+    idempotency_key: str | None = Header(default=None, min_length=1, max_length=200),
     service: CandleFetchJobService = Depends(get_candle_fetch_job_service),
 ) -> CandleFetchJobResponse:
     try:
-        job = service.create_manual_backfill_job(request.to_command())
+        if idempotency_key:
+            job = submit_job(service, idempotency_key, {"route": "fetch-jobs", **request.model_dump(mode="json")},
+                             lambda: service.create_manual_backfill_job(request.to_command()))
+        else:
+            job = service.create_manual_backfill_job(request.to_command())
+    except JobConflict:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    background_tasks.add_task(service.run_job, job.id)
     return CandleFetchJobResponse.from_job(job)
 
 
@@ -120,6 +133,8 @@ def get_candle_fetch_job(
 ) -> CandleFetchJobResponse:
     try:
         job = service.get_job(job_id)
+    except JobConflict:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -133,6 +148,8 @@ def cancel_candle_fetch_job(
 ) -> CandleFetchJobResponse:
     try:
         job = service.cancel_job(job_id)
+    except JobConflict:
+        raise
     except ValueError as exc:
         status_code = 404 if str(exc).startswith("Fetch job not found") else 400
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
@@ -149,6 +166,8 @@ def pause_candle_fetch_job(
 ) -> CandleFetchJobResponse:
     try:
         job = service.pause_job(job_id)
+    except JobConflict:
+        raise
     except ValueError as exc:
         status_code = 404 if str(exc).startswith("Fetch job not found") else 400
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
@@ -161,18 +180,18 @@ def pause_candle_fetch_job(
 @router.post("/{job_id}/resume", response_model=CandleFetchJobResponse, status_code=status.HTTP_202_ACCEPTED)
 def resume_candle_fetch_job(
     job_id: str,
-    background_tasks: BackgroundTasks,
     service: CandleFetchJobService = Depends(get_candle_fetch_job_service),
 ) -> CandleFetchJobResponse:
     try:
         job = service.resume_job(job_id)
+    except JobConflict:
+        raise
     except ValueError as exc:
         status_code = 404 if str(exc).startswith("Fetch job not found") else 400
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    background_tasks.add_task(service.run_job, job.id)
     return CandleFetchJobResponse.from_job(job)
 
 

@@ -1,3 +1,7 @@
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from app.infrastructure.external.provider_limiter import ProviderLimiter
+from app.application.services.execution_control import interruptible_wait, check_execution
 import logging
 import time
 
@@ -13,16 +17,17 @@ logger = logging.getLogger(__name__)
 
 
 class BinanceMarketDataClient:
-    def __init__(self, *, base_url: str, timeout_seconds: float) -> None:
+    def __init__(self, *, base_url: str, timeout_seconds: float, limiter=None) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout_seconds = timeout_seconds
+        self._limiter = limiter or ProviderLimiter()
 
     def ping(self) -> bool:
         logger.info("Checking Binance API health base_url=%s", self._base_url)
-        with httpx.Client(base_url=self._base_url, timeout=self._timeout_seconds) as client:
-            response = client.get("/api/v3/ping")
-            response.raise_for_status()
+        self._get_json_with_retry(fetch_id="ping", batch_index=0, path="/api/v3/ping",
+                                  params={}, retry_attempts=0, retry_delay_seconds=0)
         return True
+
 
     def discover_markets(
         self,
@@ -200,8 +205,20 @@ class BinanceMarketDataClient:
         for attempt in range(retry_attempts + 1):
             attempt_started_at = time.perf_counter()
             try:
+                # Binance Spot documented IP weights: ping 1, klines 2, exchangeInfo 20.
+                self._limiter.acquire({"/api/v3/ping": 1, "/api/v3/klines": 2, "/api/v3/exchangeInfo": 20}[path])
                 with httpx.Client(base_url=self._base_url, timeout=self._timeout_seconds) as client:
                     response = client.get(path, params=params)
+                    if response.status_code in {429, 418}:
+                        retry_after = response.headers.get("Retry-After", "60")
+                        try:
+                            cooldown = float(retry_after)
+                        except ValueError:
+                            try:
+                                cooldown = (parsedate_to_datetime(retry_after) - datetime.now(timezone.utc)).total_seconds()
+                            except (ValueError, TypeError):
+                                cooldown = 60
+                        self._limiter.defer(cooldown)
                     response.raise_for_status()
                     logger.info(
                         "binance http request completed fetch_id=%s batch_index=%s path=%s attempt=%s status_code=%s duration_ms=%s",
@@ -212,6 +229,7 @@ class BinanceMarketDataClient:
                         response.status_code,
                         int((time.perf_counter() - attempt_started_at) * 1000),
                     )
+                    check_execution()
                     return response.json()
             except httpx.HTTPError as exc:
                 if attempt >= retry_attempts or not self._should_retry(exc):
@@ -237,7 +255,7 @@ class BinanceMarketDataClient:
                     exc,
                 )
                 if delay > 0:
-                    time.sleep(delay)
+                    interruptible_wait(delay)
         raise RuntimeError("Unexpected retry loop exit.")
 
     def _should_retry(self, exc: httpx.HTTPError) -> bool:

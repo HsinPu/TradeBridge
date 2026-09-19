@@ -38,6 +38,7 @@ class Settings:
     database_path: str = "./data/tradebridge.db"
     storage_timezone: str = "Asia/Taipei"
     market_data_default_provider: ProviderName = DEFAULT_PROVIDER
+    job_max_workers: int = 2
     scheduler_enabled: bool = True
     scheduler_poll_seconds: float = 30.0
     market_data_rate_limit_weight_per_minute: int = 1200
@@ -79,6 +80,7 @@ def get_settings() -> Settings:
         market_data_default_provider=normalize_provider(
             os.getenv("MARKET_DATA_DEFAULT_PROVIDER", DEFAULT_PROVIDER)
         ),
+        job_max_workers=max(1, int(os.getenv("JOB_MAX_WORKERS", "2"))),
         scheduler_enabled=_parse_bool(os.getenv("SCHEDULER_ENABLED", "true"), True),
         scheduler_poll_seconds=float(os.getenv("SCHEDULER_POLL_SECONDS", "30")),
         market_data_rate_limit_weight_per_minute=int(os.getenv("MARKET_DATA_RATE_LIMIT_WEIGHT_PER_MINUTE", "1200")),

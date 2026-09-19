@@ -268,14 +268,14 @@ def test_pause_fetch_job_api_delegates_to_service(tmp_path, monkeypatch) -> None
     assert payload["error_message"] == "Pause requested by user."
 
 
-def test_resume_fetch_job_api_delegates_to_service_and_starts_background_run(tmp_path, monkeypatch) -> None:
+def test_resume_fetch_job_api_delegates_to_service_without_inline_execution(tmp_path, monkeypatch) -> None:
     service = FakeCandleFetchJobService()
     with _client(tmp_path, monkeypatch, service) as client:
         response = client.post("/api/v1/candle-fetch-jobs/job-123/resume")
 
     assert response.status_code == 202
     assert service.resumed_job_id == "job-123"
-    assert service.run_job_id == "job-123"
+    assert service.run_job_id is None
     payload = response.json()
     assert payload["id"] == "job-123"
     assert payload["status"] == "pending"

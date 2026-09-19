@@ -1,4 +1,4 @@
-import { apiRequest, buildQueryString } from "../../shared/api/client";
+import { apiJobRequest, apiRequest, buildQueryString } from "../../shared/api/client";
 
 type MarketDataRequestOptions = {
   signal?: AbortSignal;
@@ -345,9 +345,13 @@ export interface CandleFetchResponse {
 }
 
 export interface CandleFetchJobResponse {
+  recovery_count: number;
+  recovery_reason: string | null;
+  attempt_count: number;
+  waiting_reason: string | null;
   id: string;
   job_type: string;
-  status: "pending" | "running" | "pausing" | "paused" | "success" | "failed" | "cancelled";
+  status: "pending" | "running" | "pausing" | "cancelling" | "paused" | "success" | "failed" | "cancelled";
   schedule_id: string | null;
   trigger_type: "manual" | "scheduled" | string;
   provider: string;
@@ -852,24 +856,15 @@ export function getDataGapSummary(query: DataGapSummaryQuery = {}) {
 }
 
 export function repairDataGap(gapId: string, request: DataGapRepairRequest = {}) {
-  return apiRequest<DataGapRepairResponse>(`/api/v1/data-gaps/${gapId}/repair`, {
-    method: "POST",
-    body: request
-  });
+  return apiJobRequest<DataGapRepairResponse>(`/api/v1/data-gaps/${gapId}/repair`, request);
 }
 
 export function fetchCandles(request: CandleFetchRequest) {
-  return apiRequest<CandleFetchResponse>("/api/v1/candles/fetch", {
-    method: "POST",
-    body: request
-  });
+  return apiJobRequest<CandleFetchJobResponse>("/api/v1/candles/fetch", request);
 }
 
 export function createCandleFetchJob(request: CandleFetchJobCreateRequest) {
-  return apiRequest<CandleFetchJobResponse>("/api/v1/candle-fetch-jobs", {
-    method: "POST",
-    body: request
-  });
+  return apiJobRequest<CandleFetchJobResponse>("/api/v1/candle-fetch-jobs", request);
 }
 
 export function getCandleFetchJob(jobId: string) {
@@ -959,7 +954,5 @@ export function deleteSchedule(scheduleId: string) {
 }
 
 export function runScheduleNow(scheduleId: string) {
-  return apiRequest<CandleFetchJobResponse>(`/api/v1/schedules/${scheduleId}/run-now`, {
-    method: "POST"
-  });
+  return apiJobRequest<CandleFetchJobResponse>(`/api/v1/schedules/${scheduleId}/run-now`);
 }

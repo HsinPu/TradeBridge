@@ -1,4 +1,5 @@
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from app.application.ports.job_execution_store import JobConflict
+from fastapi import APIRouter, Header, Depends, HTTPException, Query, status
 
 from app.api.v1.dependencies import get_candle_fetch_job_service, get_data_gap_service
 from app.application.services.data_gap_service import DataGapService
@@ -41,6 +42,8 @@ def list_data_gaps(
             interval=interval,
             status=status_filter,
         )
+    except JobConflict:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -65,6 +68,8 @@ def get_data_gap_summary(
                 interval=interval,
             )
         )
+    except JobConflict:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -72,19 +77,22 @@ def get_data_gap_summary(
 @router.post("/{gap_id}/repair", response_model=DataGapRepairResponse, status_code=status.HTTP_202_ACCEPTED)
 def repair_data_gap(
     gap_id: str,
-    background_tasks: BackgroundTasks,
     request: DataGapRepairRequest | None = None,
+    idempotency_key: str | None = Header(default=None, min_length=1, max_length=200),
     service: CandleFetchJobService = Depends(get_candle_fetch_job_service),
 ) -> DataGapRepairResponse:
     selected_request = request or DataGapRepairRequest()
     try:
-        result = service.create_data_gap_repair_job(selected_request.to_command(gap_id))
+        if idempotency_key:
+            result = service.enqueue_gap_repair(selected_request.to_command(gap_id), idempotency_key)
+        else:
+            result = service.create_data_gap_repair_job(selected_request.to_command(gap_id))
+    except JobConflict:
+        raise
     except ValueError as exc:
         status_code = 404 if str(exc).startswith("Data gap not found") else 400
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
-    if result.should_start_job:
-        background_tasks.add_task(service.run_job, result.job.id)
     return DataGapRepairResponse.from_gap_and_job(gap=result.gap, job=result.job)
 
 

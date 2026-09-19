@@ -52,8 +52,11 @@ fetch services.
 - `retry_attempts`: retry count for transient provider failures. Default: `2`.
 - `retry_delay_seconds`: base retry delay in seconds. Default: `0.25`.
 
-The response includes the effective fetch plan, whether the stored range is complete,
-and compressed missing ranges when gaps remain.
+The response is now **202 with a durable job**, including its `id` and `status`.
+Poll `GET /api/v1/candle-fetch-jobs/{id}` for progress, then read candles/gaps
+through the read APIs. This replaces the former synchronous response.
+See [task reliability](../docs/decisions/task-reliability.md) for controls,
+idempotency keys, recovery and upgrade/rollback instructions.
 
 `GET /api/v1/candles/` accepts optional `start_time` and `end_time` query
 parameters to filter stored candles by open time. `GET /api/v1/candles/gaps`
@@ -66,8 +69,9 @@ fills those gaps before doing an incremental fetch toward the latest safe candle
 
 `overwrite_range` and `delete_reload` require both `start_time` and `end_time`.
 `overwrite_range` upserts official provider candles for the selected range.
-`delete_reload` fetches the selected range first, verifies the provider response is
-complete, and then replaces the stored range inside one database transaction.
+`delete_reload` fetches and validates each batch before replacing that batch and
+committing its progress in one database transaction. Earlier committed batches
+are preserved if a later batch fails.
 
 ## Candle storage
 
@@ -78,20 +82,7 @@ payload JSON.
 
 ## Logging
 
-Fetch logs include a `fetch_id` that is also returned by `POST /api/v1/candles/fetch`.
-Search that value in the runtime log to follow one request across planning, provider
-requests, storage, and continuity checks.
-
-Key log events:
-
-- `candle fetch started`: request parameters and safety controls.
-- `candle coverage loaded`: current database range before planning.
-- `auto mode selected`: whether auto mode chose incremental or gap filling.
-- `candle fetch planned`: effective time range, expected candles, batch count, and current-candle exclusion.
-- `candle batch started` / `candle batch completed`: per-batch provider count and accepted count.
-- provider-specific kline request logs: provider request boundaries.
-- provider-specific HTTP request logs: HTTP status, attempts, and retry details.
-- `candle storage completed`: DB upsert count and storage duration.
-- `candle continuity checked`: final completeness result and missing candle count.
-- `candle gap detected`: compressed missing ranges when gaps remain.
-- `candle fetch completed` / `candle fetch failed`: final status and total duration.
+Use the job `id` to correlate `fetch job created`, `fetch job started`, batch
+completion, interruption and completion/failure logs. Provider requests use the
+same ID as `fetch_id`. `/api/v1/runtime/status` also reports executor health,
+capacity, running/queued counts and the last dispatcher scan.

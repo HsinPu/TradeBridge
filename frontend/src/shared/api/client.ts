@@ -6,6 +6,7 @@ type ApiRequestOptions = {
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   body?: unknown;
   signal?: AbortSignal;
+  headers?: Record<string, string>;
 };
 
 export class ApiError extends Error {
@@ -25,7 +26,7 @@ export async function apiRequest<TResponse>(
 ): Promise<TResponse> {
   const response = await fetch(`${apiBaseUrl}${path}`, {
     method: options.method ?? "GET",
-    headers: options.body === undefined ? undefined : { "Content-Type": "application/json" },
+    headers: { ...(options.body === undefined ? {} : { "Content-Type": "application/json" }), ...options.headers },
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
     signal: options.signal
   });
@@ -61,4 +62,15 @@ export function buildQueryString<TParams extends object>(params: TParams) {
 
   const queryString = searchParams.toString();
   return queryString ? `?${queryString}` : "";
+}
+
+// Reuse a submission key if the connection fails after the server accepted it.
+export async function apiJobRequest<T>(path: string, body?: unknown): Promise<T> {
+  const headers = { "Idempotency-Key": crypto.randomUUID() };
+  try {
+    return await apiRequest<T>(path, { method: "POST", body, headers });
+  } catch (error) {
+    if (!(error instanceof TypeError)) throw error;
+    return apiRequest<T>(path, { method: "POST", body, headers });
+  }
 }

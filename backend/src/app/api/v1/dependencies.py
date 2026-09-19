@@ -1,4 +1,5 @@
 from functools import lru_cache
+from app.infrastructure.persistence.sqlite_job_execution_store import SQLiteJobExecutionStore
 
 from fastapi import Header, HTTPException, status
 
@@ -129,11 +130,22 @@ def get_candle_service() -> CandleService:
     )
 
 
+@lru_cache(maxsize=8)
+def _job_execution_store(database_path: str, max_workers: int) -> SQLiteJobExecutionStore:
+    return SQLiteJobExecutionStore(database_path, max_workers=max_workers)
+
+
+def get_job_execution_store() -> SQLiteJobExecutionStore:
+    settings = get_settings()
+    return _job_execution_store(settings.database_path, settings.job_max_workers)
+
+
 def get_candle_fetch_job_service() -> CandleFetchJobService:
     return CandleFetchJobService(
         candle_repository=get_candle_repository(),
         fetch_job_repository=get_fetch_job_repository(),
         data_gap_repository=get_data_gap_repository(),
+        execution_store=get_job_execution_store(),
         provider_resolver=get_market_data_provider_registry(),
     )
 
@@ -147,6 +159,7 @@ def get_schedule_service() -> ScheduleService:
         schedule_repository=get_schedule_repository(),
         fetch_job_repository=get_fetch_job_repository(),
         fetch_job_service=get_candle_fetch_job_service(),
+        execution_store=get_job_execution_store(),
     )
 
 
@@ -174,7 +187,7 @@ def get_api_key_service() -> ApiKeyService:
 
 
 def get_database_maintenance_service() -> DatabaseMaintenanceService:
-    return DatabaseMaintenanceService(repository=get_database_maintenance_repository())
+    return DatabaseMaintenanceService(repository=get_database_maintenance_repository(), execution_store=get_job_execution_store())
 
 
 def require_market_data_read_api_key(x_api_key: str = Header(default="")) -> ApiKeyRecord:

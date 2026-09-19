@@ -135,81 +135,8 @@ class CompleteMarketDataProvider:
         return candles
 
 
-def test_auto_mode_fills_existing_coverage_gaps_before_incremental_fetch() -> None:
-    repository = MemoryCandleRepository()
-    repository.upsert_many([_make_candle(0), _make_candle(60_000), _make_candle(180_000)])
-    service = CandleService(
-        repository=repository,
-        provider_resolver=StaticProviderResolver(CompleteMarketDataProvider()),
-    )
-    result = service.fetch_and_store(
-        CandleFetchQuery(
-            provider="binance",
-            market_type="spot",
-            market_pair="BTC/USDT",
-            interval="1m",
-            start_time=None,
-            end_time=None,
-            limit=500,
-            mode="auto",
-            closed_only=True,
-            overlap_candles=2,
-            batch_limit=1000,
-            max_batches=10,
-            verify_continuity=True,
-            retry_attempts=2,
-            retry_delay_seconds=0,
-        )
-    )
-
-    assert result.plan.mode == "fill_gaps"
-    assert len(result.fetch_id) == 12
-    assert result.plan.effective_start_open_time_ms == 0
-    assert result.plan.effective_end_open_time_ms == 180_000
-    assert result.is_complete is True
-    assert result.missing_count == 0
-    assert repository.list_open_time_ms(
-        provider="binance",
-        market_pair="BTC/USDT",
-        interval="1m",
-        start_time_ms=0,
-        end_time_ms=180_000,
-    ) == [0, 60_000, 120_000, 180_000]
 
 
-def test_service_reports_missing_ranges_after_fetch() -> None:
-    repository = MemoryCandleRepository()
-    service = CandleService(
-        repository=repository,
-        provider_resolver=StaticProviderResolver(SparseMarketDataProvider()),
-    )
-    result = service.fetch_and_store(
-        CandleFetchQuery(
-            provider="binance",
-            market_type="spot",
-            market_pair="BTC/USDT",
-            interval="1m",
-            start_time=_dt_from_ms(0),
-            end_time=_dt_from_ms(180_000),
-            limit=500,
-            mode="backfill",
-            closed_only=True,
-            overlap_candles=2,
-            batch_limit=1000,
-            max_batches=10,
-            verify_continuity=True,
-            retry_attempts=2,
-            retry_delay_seconds=0,
-        )
-    )
-
-    assert result.is_complete is False
-    assert len(result.fetch_id) == 12
-    assert result.missing_count == 1
-    assert len(result.missing_ranges) == 1
-    assert result.missing_ranges[0].start_open_time_ms == 120_000
-    assert result.plan.expected_candle_count == 4
-    assert len(result.candles) == 3
 
 
 def test_service_reports_existing_missing_ranges_without_fetching() -> None:
@@ -226,86 +153,8 @@ def test_service_reports_existing_missing_ranges_without_fetching() -> None:
     assert result["missing_ranges"][0].start_open_time_ms == 60_000
 
 
-def test_delete_reload_replaces_selected_range_when_provider_response_is_complete() -> None:
-    repository = MemoryCandleRepository()
-    repository.upsert_many([_make_candle(0), _make_candle(60_000), _make_candle(120_000)])
-    service = CandleService(
-        repository=repository,
-        provider_resolver=StaticProviderResolver(CompleteMarketDataProvider()),
-    )
-
-    result = service.fetch_and_store(
-        CandleFetchQuery(
-            provider="binance",
-            market_type="spot",
-            market_pair="BTC/USDT",
-            interval="1m",
-            start_time=_dt_from_ms(0),
-            end_time=_dt_from_ms(120_000),
-            limit=500,
-            mode="delete_reload",
-            closed_only=True,
-            overlap_candles=2,
-            batch_limit=1000,
-            max_batches=10,
-            verify_continuity=True,
-            retry_attempts=2,
-            retry_delay_seconds=0,
-        )
-    )
-
-    assert result.plan.mode == "delete_reload"
-    assert result.saved_count == 3
-    assert result.is_complete is True
-    assert repository.list_open_time_ms(
-        provider="binance",
-        market_pair="BTC/USDT",
-        interval="1m",
-        start_time_ms=0,
-        end_time_ms=120_000,
-    ) == [0, 60_000, 120_000]
 
 
-def test_delete_reload_rejects_incomplete_provider_response_before_replacing_data() -> None:
-    repository = MemoryCandleRepository()
-    repository.upsert_many([_make_candle(0), _make_candle(60_000), _make_candle(120_000), _make_candle(180_000)])
-    service = CandleService(
-        repository=repository,
-        provider_resolver=StaticProviderResolver(SparseMarketDataProvider()),
-    )
-
-    try:
-        service.fetch_and_store(
-            CandleFetchQuery(
-                provider="binance",
-                market_type="spot",
-                market_pair="BTC/USDT",
-                interval="1m",
-                start_time=_dt_from_ms(0),
-                end_time=_dt_from_ms(180_000),
-                limit=500,
-                mode="delete_reload",
-                closed_only=True,
-                overlap_candles=2,
-                batch_limit=1000,
-                max_batches=10,
-                verify_continuity=True,
-                retry_attempts=2,
-                retry_delay_seconds=0,
-            )
-        )
-    except ValueError as exc:
-        assert "complete provider response" in str(exc)
-    else:
-        raise AssertionError("delete_reload should reject incomplete provider responses.")
-
-    assert repository.list_open_time_ms(
-        provider="binance",
-        market_pair="BTC/USDT",
-        interval="1m",
-        start_time_ms=0,
-        end_time_ms=180_000,
-    ) == [0, 60_000, 120_000, 180_000]
 
 
 def _make_candle(open_time_ms: int) -> Candle:

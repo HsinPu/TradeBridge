@@ -169,7 +169,7 @@ def test_data_gap_summary_api_delegates_filters_to_service(tmp_path, monkeypatch
     assert payload["first_active_gap_start_time"] == "2018-01-04T03:01:00+00:00"
 
 
-def test_repair_data_gap_api_starts_background_repair_job(tmp_path, monkeypatch) -> None:
+def test_repair_data_gap_api_enqueues_repair_job(tmp_path, monkeypatch) -> None:
     service = FakeDataGapService()
     fetch_job_service = FakeCandleFetchJobService()
     with _client(tmp_path, monkeypatch, service, fetch_job_service) as client:
@@ -177,7 +177,7 @@ def test_repair_data_gap_api_starts_background_repair_job(tmp_path, monkeypatch)
 
     assert response.status_code == 202
     assert fetch_job_service.repair_command == DataGapRepairCommand(gap_id="gap-123")
-    assert fetch_job_service.run_job_ids == ["repair-job-1"]
+    assert fetch_job_service.run_job_ids == []
     payload = response.json()
     assert payload["gap"]["status"] == "repairing"
     assert payload["job"]["id"] == "repair-job-1"

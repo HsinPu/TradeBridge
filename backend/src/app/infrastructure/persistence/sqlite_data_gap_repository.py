@@ -1,3 +1,4 @@
+from app.infrastructure.persistence.sqlite_connection import transactional
 from dataclasses import asdict
 from pathlib import Path
 from uuid import uuid4
@@ -64,6 +65,7 @@ class SQLiteDataGapRepository:
                 """
             )
 
+    @transactional
     def upsert_detected_many(self, gaps: list[DataGapCreate]) -> list[DataGap]:
         if not gaps:
             return []
@@ -150,6 +152,7 @@ class SQLiteDataGapRepository:
             ).fetchone()
         return self._row_to_data_gap(row) if row else None
 
+    @transactional
     def mark_repairing(self, *, gap_id: str, repair_job_id: str) -> DataGap:
         with self._connect() as connection:
             connection.execute(
@@ -169,6 +172,7 @@ class SQLiteDataGapRepository:
             raise RuntimeError(f"Data gap not found after repair status update: {gap_id}")
         return gap
 
+    @transactional
     def mark_repair_succeeded(self, *, repair_job_id: str) -> list[DataGap]:
         with self._connect() as connection:
             connection.execute(
@@ -185,6 +189,7 @@ class SQLiteDataGapRepository:
             )
         return self._list_by_repair_job(repair_job_id)
 
+    @transactional
     def mark_repair_failed(self, *, repair_job_id: str, reason: str) -> list[DataGap]:
         with self._connect() as connection:
             connection.execute(

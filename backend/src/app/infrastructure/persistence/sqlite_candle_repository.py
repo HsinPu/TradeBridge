@@ -1,3 +1,4 @@
+from app.infrastructure.persistence.sqlite_connection import transactional
 from pathlib import Path
 import sqlite3
 
@@ -72,6 +73,7 @@ class SQLiteCandleRepository:
                 """
             )
 
+    @transactional
     def upsert_many(self, candles: list[Candle]) -> int:
         if not candles:
             return 0
@@ -80,6 +82,7 @@ class SQLiteCandleRepository:
             self._upsert_many(connection=connection, candles=candles)
         return len(candles)
 
+    @transactional
     def replace_range(
         self,
         *,

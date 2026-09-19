@@ -1,6 +1,11 @@
+from app.api.v1.job_submission import submit_job
+from app.api.v1.dependencies import get_candle_fetch_job_service
+from app.application.services.candle_fetch_job_service import CandleFetchJobService
+from app.application.ports.job_execution_store import JobConflict
+from app.schemas.responses.fetch_jobs import CandleFetchJobResponse
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Header, Depends, HTTPException, Query
 
 from app.application.services.candle_service import CandleService
 from app.api.v1.dependencies import get_candle_service
@@ -9,8 +14,6 @@ from app.schemas.requests.candles import CandleFetchRequest
 from app.schemas.responses.candles import (
     CandleChartResponse,
     CandleCoverageResponse,
-    CandleFetchResponse,
-    CandleFetchPlanResponse,
     CandleGapResponse,
     CandleListResponse,
     CandleListItemResponse,
@@ -109,29 +112,20 @@ def get_candle_detail(
     return CandleResponse.from_candle(candle)
 
 
-@router.post("/fetch", response_model=CandleFetchResponse)
+@router.post("/fetch", response_model=CandleFetchJobResponse, status_code=202)
 def fetch_candles(
     request: CandleFetchRequest,
-    service: CandleService = Depends(get_candle_service),
-) -> CandleFetchResponse:
+    idempotency_key: str | None = Header(default=None, min_length=1, max_length=200),
+    service: CandleFetchJobService = Depends(get_candle_fetch_job_service),
+) -> CandleFetchJobResponse:
     try:
-        result = service.fetch_and_store(request.to_query())
+        job = submit_job(service, idempotency_key, {"route": "candles/fetch", **request.model_dump(mode="json")},
+                         lambda: service.create_query_job(request.to_query()))
+    except JobConflict:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    return CandleFetchResponse(
-        fetch_id=result.fetch_id,
-        fetched_count=len(result.candles),
-        saved_count=result.saved_count,
-        is_complete=result.is_complete,
-        missing_count=result.missing_count,
-        missing_ranges=[
-            MissingCandleRangeResponse.from_missing_range(missing_range)
-            for missing_range in result.missing_ranges
-        ],
-        plan=CandleFetchPlanResponse.from_plan(result.plan),
-        candles=[CandleResponse.from_candle(candle) for candle in result.candles],
-    )
+    return CandleFetchJobResponse.from_job(job)
 
 
 @router.get("/coverage", response_model=CandleCoverageResponse)

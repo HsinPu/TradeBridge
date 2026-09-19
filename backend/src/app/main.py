@@ -10,6 +10,9 @@ from app.core.logging import configure_logging
 from app.core.settings import Settings, get_settings
 from app.infrastructure.persistence.sqlite_database import initialize_sqlite_database
 from app.infrastructure.scheduler.schedule_runner import ScheduleRunner
+from app.infrastructure.scheduler.job_runner import JobRunner
+from app.application.ports.job_execution_store import JobConflict, MaintenanceActive
+from fastapi.responses import JSONResponse
 
 logger = logging.getLogger(__name__)
 
@@ -20,13 +23,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("Starting %s in %s environment", settings.app_name, settings.app_env)
     initialize_sqlite_database(settings.database_path)
     logger.info("SQLite database ready at %s", settings.database_path)
+    from app.api.v1.dependencies import get_candle_fetch_job_service, get_schedule_service, get_job_execution_store
+
+    # Initialize shared dependencies before worker threads can access them.
+    get_candle_fetch_job_service()
+    get_schedule_service()
+    jobs = JobRunner(store=get_job_execution_store(), service_factory=get_candle_fetch_job_service)
+    app.state.job_runner = jobs
+    jobs.start()
     runner: ScheduleRunner | None = None
     if settings.scheduler_enabled:
-        from app.api.v1.dependencies import get_candle_fetch_job_service, get_schedule_service
-
         runner = ScheduleRunner(
             schedule_service=get_schedule_service(),
-            fetch_job_service=get_candle_fetch_job_service(),
             poll_seconds=settings.scheduler_poll_seconds,
         )
         runner.start()
@@ -35,6 +43,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         if runner is not None:
             runner.stop()
+        jobs.stop()
         logger.info("Stopping %s", settings.app_name)
 
 
@@ -48,6 +57,14 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
     app.state.settings = settings
+
+    @app.exception_handler(JobConflict)
+    async def job_conflict_handler(request, exc):
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    @app.exception_handler(MaintenanceActive)
+    async def maintenance_handler(request, exc):
+        return JSONResponse(status_code=503, content={"detail": str(exc)})
 
     app.add_middleware(
         CORSMiddleware,

@@ -165,7 +165,7 @@ def test_schedule_api_crud_and_pause_resume_delegate_to_service(tmp_path, monkey
     assert schedule_service.deleted_schedule_id == "schedule-1"
 
 
-def test_run_schedule_now_api_creates_job_and_starts_background_run(tmp_path, monkeypatch) -> None:
+def test_run_schedule_now_api_creates_job_without_inline_execution(tmp_path, monkeypatch) -> None:
     schedule_service = FakeScheduleService()
     fetch_job_service = FakeFetchJobService()
     with _client(tmp_path, monkeypatch, schedule_service, fetch_job_service) as client:
@@ -173,7 +173,7 @@ def test_run_schedule_now_api_creates_job_and_starts_background_run(tmp_path, mo
 
     assert response.status_code == 202
     assert schedule_service.created_job_schedule_id == "schedule-1"
-    assert fetch_job_service.run_job_id == "job-from-schedule"
+    assert fetch_job_service.run_job_id is None
     payload = response.json()
     assert payload["id"] == "job-from-schedule"
     assert payload["schedule_id"] == "schedule-1"

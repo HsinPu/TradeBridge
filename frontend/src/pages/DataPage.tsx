@@ -38,7 +38,6 @@ import {
   cancelCandleFetchJob,
   createCandleFetchJob,
   DEFAULT_MARKET_DATA_PROVIDER,
-  fetchCandles,
   getCandleCoverage,
   getCandleDetail,
   getDataGapSummary,
@@ -120,7 +119,6 @@ type DataPagePreferences = {
   tablePageSize: number;
   mode: DrawerMode;
   refetchVerifyContinuity: boolean;
-  refetchRunAsBackgroundJob: boolean;
 };
 
 type TableQueryState = {
@@ -366,7 +364,6 @@ function getStoredDataPagePreferences(): DataPagePreferences {
     tablePageSize: DEFAULT_TABLE_PAGE_SIZE,
     mode: "fill-gaps",
     refetchVerifyContinuity: true,
-    refetchRunAsBackgroundJob: true
   };
 
   if (typeof window === "undefined") {
@@ -393,10 +390,7 @@ function getStoredDataPagePreferences(): DataPagePreferences {
         typeof parsed.refetchVerifyContinuity === "boolean"
           ? parsed.refetchVerifyContinuity
           : defaults.refetchVerifyContinuity,
-      refetchRunAsBackgroundJob:
-        typeof parsed.refetchRunAsBackgroundJob === "boolean"
-          ? parsed.refetchRunAsBackgroundJob
-          : defaults.refetchRunAsBackgroundJob
+
     };
   } catch {
     return defaults;
@@ -567,6 +561,10 @@ function getFetchSteps(progress: FetchProgressState): FetchStep[] {
 }
 
 function getProgressStatusText(progress: FetchProgressState, timezone: string) {
+  if (progress.job?.status === "pending") return "排隊中 / Queued";
+  if (progress.job?.status === "pausing") return "暫停中 / Pausing";
+  if (progress.job?.status === "cancelling") return "取消中 / Cancelling";
+  if (progress.job?.recovery_count && progress.job.status === "running") return "已恢復執行 / Recovered";
   if (progress.status === "success") {
     return "資料已完成寫入並驗證缺口";
   }
@@ -895,9 +893,7 @@ export function DataPage({ messages }: DataPageProps) {
   const [candleDetails, setCandleDetails] = useState<Record<string, CandleDetailLoadState>>({});
   const [candleTotalCount, setCandleTotalCount] = useState(0);
   const [refetchVerifyContinuity, setRefetchVerifyContinuity] = useState(storedPreferences.refetchVerifyContinuity);
-  const [refetchRunAsBackgroundJob, setRefetchRunAsBackgroundJob] = useState(
-    storedPreferences.refetchRunAsBackgroundJob
-  );
+
   const [requestLatencyMs, setRequestLatencyMs] = useState<number | null>(null);
   const [lastRequestAt, setLastRequestAt] = useState<string | null>(null);
   const [providerError, setProviderError] = useState<string | null>(null);
@@ -975,11 +971,10 @@ export function DataPage({ messages }: DataPageProps) {
       tablePageSize,
       mode,
       refetchVerifyContinuity,
-      refetchRunAsBackgroundJob
     };
 
     window.localStorage.setItem(DATA_PAGE_STORAGE_KEY, JSON.stringify(preferences));
-  }, [interval, limit, marketPair, mode, refetchRunAsBackgroundJob, refetchVerifyContinuity, tablePageSize]);
+  }, [interval, limit, marketPair, mode, refetchVerifyContinuity, tablePageSize]);
 
   useEffect(() => {
     let ignore = false;
@@ -1268,8 +1263,11 @@ export function DataPage({ messages }: DataPageProps) {
 
     const activeJobId = jobId;
     let ignore = false;
+    let inFlight = false;
 
     async function pollFetchJob() {
+      if (inFlight || ignore) return;
+      inFlight = true;
       try {
         const job = await getCandleFetchJob(activeJobId);
         if (ignore) {
@@ -1313,21 +1311,9 @@ export function DataPage({ messages }: DataPageProps) {
           }
         }
       } catch (error) {
-        console.error(error);
-        if (ignore) {
-          return;
-        }
-        setFetching(false);
-        setTableError(getDataLoadErrorMessage("table", error, isEnglish));
-        setLastRequestAt(toDisplayDateTime(new Date().toISOString(), timezone));
-        setFetchProgress((current) => ({
-          ...current,
-          status: "error",
-          percent: 100,
-          elapsedSeconds:
-            current.startedAtMs === null ? current.elapsedSeconds : (Date.now() - current.startedAtMs) / 1000,
-          errorMessage: getErrorMessage(error)
-        }));
+        if (!ignore) setTableError(getDataLoadErrorMessage("table", error, isEnglish));
+      } finally {
+        inFlight = false;
       }
     }
 
@@ -1378,7 +1364,7 @@ export function DataPage({ messages }: DataPageProps) {
 
     try {
       const job = await cancelCandleFetchJob(jobId);
-      setFetching(false);
+      setFetching(job.status === "cancelling");
       setFetchProgress((current) => ({
         ...current,
         status: getProgressStatusFromJob(job.status),
@@ -1457,47 +1443,6 @@ export function DataPage({ messages }: DataPageProps) {
     });
 
     try {
-      if (!refetchRunAsBackgroundJob) {
-        const result = await fetchCandles({
-          provider: selectedProvider,
-          market_type: "spot",
-          market_pair: marketPair,
-          interval,
-          mode: requestMode,
-          closed_only: true,
-          limit,
-          batch_limit: limit,
-          max_batches: 100,
-          overlap_candles: 2,
-          verify_continuity: refetchVerifyContinuity,
-          retry_attempts: 2,
-          retry_delay_seconds: 0.25,
-          start_time: fetchDateParams.start_time,
-          end_time: fetchDateParams.end_time
-        });
-        setFetchProgress({
-          status: "success",
-          mode: fetchMode,
-          percent: 100,
-          elapsedSeconds: (Date.now() - startedAtMs) / 1000,
-          startedAtMs,
-          job: null,
-          directResult: result,
-          errorMessage: null
-        });
-        setLastFetchSummary({
-          mode: fetchMode,
-          fetchedCount: result.fetched_count,
-          savedCount: result.saved_count,
-          missingCount: result.missing_count,
-          batchCount: result.plan.batch_count,
-          completedAt: toDisplayDateTime(new Date().toISOString(), timezone)
-        });
-        setFetching(false);
-        await Promise.all([loadDataPage({ forceChartRefresh: true }), loadTablePage()]);
-        return;
-      }
-
       const job = await createCandleFetchJob({
         provider: selectedProvider,
         market_type: "spot",
@@ -2027,12 +1972,7 @@ export function DataPage({ messages }: DataPageProps) {
                   >
                     {messages.data.validateRows}
                   </Checkbox>
-                  <Checkbox
-                    checked={refetchRunAsBackgroundJob}
-                    onChange={(event) => setRefetchRunAsBackgroundJob(event.target.checked)}
-                  >
-                    {messages.data.runAsBackgroundJob}
-                  </Checkbox>
+
                 </Space>
                 <Alert
                   type={modeWarning ? "warning" : "info"}
@@ -2146,8 +2086,8 @@ export function DataPage({ messages }: DataPageProps) {
               hasFetchJob ? (
                 <>
                   <Button onClick={() => setFetchProgressModalOpen(false)}>背景執行</Button>
-                  <Button onClick={() => void handlePauseFetchJob()}>暫停</Button>
-                  <Button danger onClick={() => void handleCancelFetchJob()}>
+                  <Button disabled={fetchProgress.job?.status === "pausing" || fetchProgress.job?.status === "cancelling"} onClick={() => void handlePauseFetchJob()}>暫停</Button>
+                  <Button danger disabled={fetchProgress.job?.status === "cancelling"} onClick={() => void handleCancelFetchJob()}>
                     中止
                   </Button>
                   <Button type="primary" icon={<LoadingOutlined />} loading>
@@ -2165,7 +2105,7 @@ export function DataPage({ messages }: DataPageProps) {
             ) : fetchProgress.status === "paused" ? (
               <>
                 <Button onClick={() => setFetchProgressModalOpen(false)}>關閉</Button>
-                <Button danger onClick={() => void handleCancelFetchJob()}>
+                <Button danger disabled={fetchProgress.job?.status === "cancelling"} onClick={() => void handleCancelFetchJob()}>
                   中止
                 </Button>
                 <Button type="primary" onClick={() => void handleResumeFetchJob()}>

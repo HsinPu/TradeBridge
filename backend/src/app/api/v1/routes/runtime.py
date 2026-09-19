@@ -18,6 +18,7 @@ def get_runtime_status(
     settings = request.app.state.settings
     api_key_count = len(service.list_api_keys())
     return RuntimeStatusResponse(
+        job_executor=request.app.state.job_runner.status() if hasattr(request.app.state, "job_runner") else None,
         runtime=settings.app_env,
         backend_url=str(request.base_url).rstrip("/"),
         api_prefix=settings.api_prefix,

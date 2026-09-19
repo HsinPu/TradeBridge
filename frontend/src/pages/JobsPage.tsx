@@ -249,6 +249,7 @@ const copy = {
       pending: "排隊中",
       running: "執行中",
       pausing: "暫停中",
+      cancelling: "取消中",
       paused: "已暫停",
       success: "成功",
       failed: "失敗",
@@ -376,6 +377,7 @@ const copy = {
       pending: "Queued",
       running: "Running",
       pausing: "Pausing",
+      cancelling: "Cancelling",
       paused: "Paused",
       success: "Success",
       failed: "Failed",
@@ -400,7 +402,7 @@ const DEFAULT_HISTORY_PAGE_SIZE = 10;
 const DEFAULT_ERROR_PAGE_SIZE = 10;
 const JOB_AUTO_REFRESH_MS = 5000;
 const DEFAULT_DISPLAY_TIMEZONE = "UTC";
-const AUTO_REFRESH_JOB_STATUSES = new Set<JobStatus>(["running", "pending", "pausing"]);
+const AUTO_REFRESH_JOB_STATUSES = new Set<JobStatus>(["running", "pending", "pausing", "cancelling"]);
 const modeOptions: ScheduleCreateRequest["mode"][] = [
   "auto",
   "backfill",
@@ -791,6 +793,16 @@ function formatDateRange(start: string | null | undefined, end: string | null | 
 
 function formatBoolean(value: boolean, t: JobsCopy) {
   return value ? t.yes : t.no;
+}
+
+function recoveryMessage(reason: string, language: Language) {
+  if (reason.startsWith("Upgrade recovery")) {
+    return language === "zh-TW" ? "升級後重新處理原本的抓取範圍" : "Reprocessing the original range after upgrade";
+  }
+  if (reason.includes("three times")) {
+    return language === "zh-TW" ? "連續三次中斷且沒有新進度，已停止任務" : "Stopped after three interruptions without progress";
+  }
+  return language === "zh-TW" ? "上次執行中斷，已從儲存的進度接續" : "Resumed from saved progress after an interruption";
 }
 
 function DetailItem({ label, value }: { label: string; value: ReactNode }) {
@@ -1317,6 +1329,7 @@ export function JobsPage({ messages, language }: JobsPageProps) {
   const activeJob =
     jobs.find((job) => job.status === "running") ??
     jobs.find((job) => job.status === "pausing") ??
+    jobs.find((job) => job.status === "cancelling") ??
     jobs.find((job) => job.status === "paused") ??
     jobs.find((job) => job.status === "pending");
   const failedJob = jobOverview?.latest_failed_job ?? null;
@@ -1325,7 +1338,7 @@ export function JobsPage({ messages, language }: JobsPageProps) {
     [jobs]
   );
   const canPauseActiveJob = activeJob?.status === "running" || activeJob?.status === "pending";
-  const canResumeActiveJob = activeJob?.status === "paused" || activeJob?.status === "pausing";
+  const canResumeActiveJob = activeJob?.status === "paused";
   const canStopActiveJob =
     activeJob?.status === "running" ||
     activeJob?.status === "pending" ||
@@ -1337,15 +1350,17 @@ export function JobsPage({ messages, language }: JobsPageProps) {
       return undefined;
     }
 
+    let polling = false;
     const intervalId = window.setInterval(() => {
-      if (document.visibilityState === "hidden") {
+      if (polling || document.visibilityState === "hidden") {
         return;
       }
+      polling = true;
       void Promise.all([
         loadJobsPage({ background: true }),
         loadJobSummary({ background: true }),
         loadJobOverview({ background: true })
-      ]);
+      ]).finally(() => { polling = false; });
     }, JOB_AUTO_REFRESH_MS);
 
     return () => window.clearInterval(intervalId);
@@ -1618,6 +1633,7 @@ export function JobsPage({ messages, language }: JobsPageProps) {
                   { label: t.all, value: "all" },
                   { label: t.statusText.running, value: "running" },
                   { label: t.statusText.pausing, value: "pausing" },
+                  { label: t.statusText.cancelling, value: "cancelling" },
                   { label: t.statusText.paused, value: "paused" },
                   { label: t.statusText.pending, value: "pending" },
                   { label: t.statusText.success, value: "success" },
@@ -2008,6 +2024,10 @@ export function JobsPage({ messages, language }: JobsPageProps) {
                 value={`${formatInteger(selectedDetailJob.completed_batch_count)} / ${formatInteger(selectedDetailJob.total_batch_count)}`}
               />
               <DetailItem label={t.missingCount} value={formatInteger(selectedDetailJob.missing_count)} />
+              <DetailItem label={language === "zh-TW" ? "恢復次數" : "Recoveries"} value={selectedDetailJob.recovery_count} />
+              {selectedDetailJob.recovery_reason && <DetailItem label={language === "zh-TW" ? "最近恢復原因" : "Recovery reason"} value={recoveryMessage(selectedDetailJob.recovery_reason, language)} />}
+              {selectedDetailJob.waiting_reason && <DetailItem label={language === "zh-TW" ? "等待原因" : "Waiting for"} value={language === "zh-TW" ? "此市場的任務完成，或其他執行名額釋出" : "Market availability or a free worker"} />}
+
               <DetailItem
                 label={t.retryCount}
                 value={`${formatInteger(selectedDetailJob.failed_count)} / ${formatInteger(selectedDetailJob.retry_attempts)}`}

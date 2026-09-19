@@ -2,6 +2,8 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
+from app.infrastructure.persistence.job_migrations import migrate_jobs
+from app.infrastructure.persistence.sqlite_connection import transactional
 
 from app.application.models.fetch_job import CandleFetchJob
 from app.infrastructure.persistence.sqlite_connection import connect_sqlite
@@ -135,6 +137,9 @@ class SQLiteFetchJobRepository:
                 """
             )
 
+        migrate_jobs(self._database_path)
+
+    @transactional
     def create(self, job: CandleFetchJob) -> CandleFetchJob:
         values = asdict(job)
         with self._connect() as connection:
@@ -230,6 +235,8 @@ class SQLiteFetchJobRepository:
                     "updated_at_ms": _datetime_text_to_ms(job.updated_at),
                 },
             )
+        with self._connect() as connection:
+            connection.execute("UPDATE fetch_jobs SET queued_at_ms=created_at_ms WHERE id=?", (job.id,))
         created_job = self.get(job.id)
         if created_job is None:
             raise RuntimeError(f"Fetch job was not created: {job.id}")
@@ -324,13 +331,14 @@ class SQLiteFetchJobRepository:
                 SELECT 1
                 FROM fetch_jobs
                 WHERE schedule_id = ?
-                  AND status IN ('pending', 'running', 'pausing', 'paused')
+                  AND status IN ('pending', 'running', 'pausing', 'paused', 'cancelling')
                 LIMIT 1
                 """,
                 (schedule_id,),
             ).fetchone()
         return row is not None
 
+    @transactional
     def mark_running(self, job_id: str) -> CandleFetchJob:
         with self._connect() as connection:
             connection.execute(
@@ -344,30 +352,32 @@ class SQLiteFetchJobRepository:
                     updated_at = CURRENT_TIMESTAMP,
                     updated_at_ms = CAST(unixepoch('now') * 1000 AS INTEGER)
                 WHERE id = ?
-                  AND status IN ('pending', 'running')
+                  AND status = 'pending'
                 """,
                 (job_id,),
             )
         return self._require_job(job_id)
 
+    @transactional
     def mark_cancelled(self, *, job_id: str, error_message: str | None = None) -> CandleFetchJob:
         with self._connect() as connection:
             connection.execute(
                 """
                 UPDATE fetch_jobs
-                SET status = 'cancelled',
+                SET status = CASE WHEN execution_token IS NOT NULL THEN 'cancelling' ELSE 'cancelled' END,
                     error_message = COALESCE(?, error_message),
-                    finished_at = CURRENT_TIMESTAMP,
-                    finished_at_ms = CAST(unixepoch('now') * 1000 AS INTEGER),
+                    finished_at = CASE WHEN execution_token IS NULL THEN CURRENT_TIMESTAMP ELSE NULL END,
+                    finished_at_ms = CASE WHEN execution_token IS NULL THEN CAST(unixepoch('now') * 1000 AS INTEGER) ELSE NULL END,
                     updated_at = CURRENT_TIMESTAMP,
                     updated_at_ms = CAST(unixepoch('now') * 1000 AS INTEGER)
                 WHERE id = ?
-                  AND status IN ('pending', 'running', 'pausing', 'paused')
+                  AND status IN ('pending', 'running', 'pausing', 'paused', 'cancelling')
                 """,
                 (error_message, job_id),
             )
         return self._require_job(job_id)
 
+    @transactional
     def mark_pause_requested(self, *, job_id: str, error_message: str | None = None) -> CandleFetchJob:
         with self._connect() as connection:
             connection.execute(
@@ -384,6 +394,7 @@ class SQLiteFetchJobRepository:
             )
         return self._require_job(job_id)
 
+    @transactional
     def mark_paused(self, *, job_id: str, error_message: str | None = None) -> CandleFetchJob:
         with self._connect() as connection:
             connection.execute(
@@ -402,24 +413,27 @@ class SQLiteFetchJobRepository:
             )
         return self._require_job(job_id)
 
+    @transactional
     def mark_pending(self, *, job_id: str, error_message: str | None = None) -> CandleFetchJob:
         with self._connect() as connection:
             connection.execute(
                 """
                 UPDATE fetch_jobs
                 SET status = 'pending',
+                    queued_at_ms = CAST(unixepoch('now') * 1000 AS INTEGER),
                     error_message = ?,
                     finished_at = NULL,
                     finished_at_ms = NULL,
                     updated_at = CURRENT_TIMESTAMP,
                     updated_at_ms = CAST(unixepoch('now') * 1000 AS INTEGER)
                 WHERE id = ?
-                  AND status IN ('paused', 'pausing')
+                  AND status = 'paused'
                 """,
                 (error_message, job_id),
             )
         return self._require_job(job_id)
 
+    @transactional
     def update_progress(
         self,
         *,
@@ -452,7 +466,7 @@ class SQLiteFetchJobRepository:
                     updated_at = CURRENT_TIMESTAMP,
                     updated_at_ms = CAST(unixepoch('now') * 1000 AS INTEGER)
                 WHERE id = ?
-                  AND status NOT IN ('cancelled', 'pausing', 'paused')
+                  AND status = 'running'
                 """,
                 (
                     effective_start_time_ms,
@@ -470,6 +484,7 @@ class SQLiteFetchJobRepository:
             )
         return self._require_job(job_id)
 
+    @transactional
     def mark_succeeded(self, job_id: str) -> CandleFetchJob:
         with self._connect() as connection:
             connection.execute(
@@ -482,12 +497,13 @@ class SQLiteFetchJobRepository:
                     updated_at = CURRENT_TIMESTAMP,
                     updated_at_ms = CAST(unixepoch('now') * 1000 AS INTEGER)
                 WHERE id = ?
-                  AND status NOT IN ('cancelled', 'pausing', 'paused')
+                  AND status = 'running'
                 """,
                 (job_id,),
             )
         return self._require_job(job_id)
 
+    @transactional
     def mark_failed(self, *, job_id: str, error_message: str) -> CandleFetchJob:
         with self._connect() as connection:
             connection.execute(
@@ -500,7 +516,7 @@ class SQLiteFetchJobRepository:
                     updated_at = CURRENT_TIMESTAMP,
                     updated_at_ms = CAST(unixepoch('now') * 1000 AS INTEGER)
                 WHERE id = ?
-                  AND status NOT IN ('cancelled', 'pausing', 'paused')
+                  AND status = 'running'
                 """,
                 (error_message, job_id),
             )
@@ -639,6 +655,10 @@ class SQLiteFetchJobRepository:
             finished_at=row["finished_at"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            recovery_count=row["recovery_count"],
+            recovery_reason=row["recovery_reason"],
+            attempt_count=row["attempt_count"],
+            waiting_reason="waiting_for_market_or_slot" if row["status"] == "pending" else None,
         )
 
 

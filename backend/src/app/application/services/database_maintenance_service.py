@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 import logging
+from contextlib import nullcontext
 
 from app.application.models.database_maintenance import DatabaseResetCommand, DatabaseResetResult
 from app.application.ports.database_maintenance_repository import DatabaseMaintenanceRepository
@@ -19,10 +20,15 @@ class DatabaseResetConflictError(ValueError):
 
 
 class DatabaseMaintenanceService:
-    def __init__(self, *, repository: DatabaseMaintenanceRepository) -> None:
+    def __init__(self, *, repository: DatabaseMaintenanceRepository, execution_store=None) -> None:
         self._repository = repository
+        self._execution_store = execution_store
 
     def reset_database(self, command: DatabaseResetCommand) -> DatabaseResetResult:
+        with self._execution_store.maintenance() if self._execution_store else nullcontext():
+            return self._reset_database(command)
+
+    def _reset_database(self, command):
         scope = command.scope.strip().lower()
         if scope not in DATABASE_RESET_SCOPES:
             raise ValueError("Unsupported database reset scope.")

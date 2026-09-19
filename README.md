@@ -32,7 +32,9 @@ docker compose up --build -d --wait    # 重新啟動，或在修改程式後重
 
 SQLite 與相關檔案存放在 Docker 命名卷 `tradebridge_tradebridge-data`，掛載至後端 `/app/data`。容器重建和 `docker compose down` 都會保留資料；`docker compose down -v` **會刪除資料卷及資料**。若使用 `-p` 自訂專案名稱，資料卷前綴也會改變。主機原有的 `data/tradebridge.db` 不會自動匯入。
 
-後端固定一個 Uvicorn worker，預設啟用排程。請保持單一後端容器，不要增加 worker 或用 `--scale backend=...`，以免重複執行排程。
+後端固定一個 Uvicorn worker，預設啟用排程。抓取任務先存入 SQLite，再由執行器處理；預設同時執行 2 個不同市場，同市場的不同週期依序執行。重啟後會接續已提交的進度，手動暫停的任務保持暫停。
+
+請保持單一後端容器，不要增加 worker 或用 `--scale backend=...`，以免重複執行排程。
 
 ## 可選設定
 
@@ -60,3 +62,5 @@ uv run --env-file env.example uvicorn app.main:app --host 127.0.0.1 --port 8025 
 另開終端機，在 `frontend` 目錄執行 `npm ci`、`npm run dev`，並開啟 <http://127.0.0.1:5173>。前端預設連接 `http://127.0.0.1:8025`；要覆寫可在 `frontend/.env.local` 設定 `VITE_API_BASE_URL`。後端本身不會自動讀取 `.env`，此處透過 uv 的 `--env-file` 載入。
 
 更多後端 API 說明見 [backend/README.md](backend/README.md)。
+
+任務狀態、API 變更、資料庫升級與回復步驟見 [任務可靠性說明](docs/decisions/task-reliability.md)。

@@ -5,10 +5,11 @@ import sqlite3
 from app.infrastructure.persistence.sqlite_connection import connect_sqlite
 from app.infrastructure.persistence.sqlite_database import initialize_sqlite_database
 
-ACTIVE_FETCH_JOB_STATUSES = ("pending", "running", "pausing", "paused")
+ACTIVE_FETCH_JOB_STATUSES = ("pending", "running", "pausing", "paused", "cancelling")
 MARKET_DATA_TABLES = ("candles", "data_gaps")
 JOB_HISTORY_TABLES = ("fetch_jobs",)
 RESET_ALL_TABLES = (
+    "schedule_triggers",
     "candles",
     "data_gaps",
     "fetch_jobs",
@@ -35,7 +36,7 @@ class SQLiteDatabaseMaintenanceRepository:
                 f"""
                 SELECT COUNT(*) AS active_count
                 FROM fetch_jobs
-                WHERE status IN ({placeholders})
+                WHERE status IN ({placeholders}) OR execution_token IS NOT NULL
                 """,
                 ACTIVE_FETCH_JOB_STATUSES,
             ).fetchone()

@@ -1,11 +1,16 @@
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict, replace
+from contextlib import nullcontext
+from app.application.ports.job_execution_store import JobExecutionStore, ExecutionLost, ExecutionInterrupted, JobConflict
+from app.application.services.execution_control import check_execution
 from datetime import datetime, timedelta, timezone, tzinfo
 from time import perf_counter
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from app.application.models.candle_query import CandleAvailabilityQuery, CandleBatchQuery
+from app.application.models.candle_query import CandleAvailabilityQuery, CandleBatchQuery, CandleFetchQuery
+from app.application.services.candle_fetch_planner import build_fetch_plan
+from app.application.services.candle_service import CandleService
 from app.application.models.data_gap import DataGap, DataGapCreate, DataGapRepairCommand
 from app.application.models.fetch_job import (
     CandleFetchJob,
@@ -59,11 +64,50 @@ class CandleFetchJobService:
         fetch_job_repository: FetchJobRepository,
         provider_resolver: MarketDataProviderResolver,
         data_gap_repository: DataGapRepository | None = None,
+        execution_store: JobExecutionStore | None = None,
     ) -> None:
         self._candle_repository = candle_repository
         self._fetch_job_repository = fetch_job_repository
         self._provider_resolver = provider_resolver
         self._data_gap_repository = data_gap_repository
+        self._execution_store = execution_store
+
+    def _plan_query(self, query, *, now=None):
+        coverage = self._candle_repository.coverage(provider=query.provider, market_pair=query.market_pair, interval=query.interval)
+        service = CandleService(repository=self._candle_repository, provider_resolver=self._provider_resolver)
+        query = service.resolve_auto_query(query=query, coverage=coverage, fetch_id="planning")
+        return build_fetch_plan(query, coverage=coverage, now=now)
+
+    def create_query_job(self, query: CandleFetchQuery):
+        # Persist the original request; replan against coverage when the market is acquired.
+        with self._execution_store.admission():
+            now = datetime.now(timezone.utc)
+            plan = self._plan_query(query, now=now)
+            job = self.create_manual_backfill_job(CandleFetchJobCreateCommand(
+                provider=query.provider, market_type=query.market_type, market_pair=query.market_pair,
+                interval=query.interval, start_time=_datetime_from_ms(plan.effective_start_open_time_ms),
+                end_time=_datetime_from_ms(plan.effective_end_time_ms),
+                mode="backfill" if plan.mode in {"latest", "incremental"} else plan.mode,
+                closed_only=query.closed_only, batch_limit=query.batch_limit,
+                overlap_candles=0, verify_continuity=query.verify_continuity,
+                retry_attempts=query.retry_attempts, retry_delay_seconds=query.retry_delay_seconds,
+            ))
+            self._execution_store.save_request(job.id, {**asdict(query), "planned_at": now.isoformat()})
+            return job
+
+    def _prepare_query(self, job):
+        if not self._execution_store or self._execution_store.load_plan(job.id):
+            return job
+        payload = self._execution_store.load_request(job.id)
+        if not payload:
+            return job
+        now = datetime.fromisoformat(payload.pop("planned_at"))
+        for field in ("start_time", "end_time"):
+            if payload.get(field):
+                payload[field] = datetime.fromisoformat(payload[field])
+        plan = self._plan_query(CandleFetchQuery(**payload), now=now)
+        self._execution_store.set_query_bounds(job.id, plan)
+        return self.get_job(job.id)
 
     def create_manual_backfill_job(self, command: CandleFetchJobCreateCommand) -> CandleFetchJob:
         return self.create_fetch_job(
@@ -91,7 +135,19 @@ class CandleFetchJobService:
             raise ValueError("schedule_id is required for scheduled fetch jobs.")
         return self.create_fetch_job(command)
 
+    def enqueue_gap_repair(self, command, key):
+        store = self._execution_store
+        with store.admission():
+            job_id = store.enqueue(key, {"route": "gap-repair", **asdict(command)},
+                                   lambda: self.create_data_gap_repair_job(command).job)
+            return DataGapRepairResult(gap=self._data_gap_repository.get_gap(command.gap_id),
+                                       job=self.get_job(job_id), should_start_job=False)
+
     def create_data_gap_repair_job(self, command: DataGapRepairCommand) -> DataGapRepairResult:
+        with self._execution_store.admission() if self._execution_store else nullcontext():
+            return self._create_data_gap_repair_job(command)
+
+    def _create_data_gap_repair_job(self, command: DataGapRepairCommand) -> DataGapRepairResult:
         if self._data_gap_repository is None:
             raise ValueError("Data gap repository is required to repair data gaps.")
 
@@ -102,7 +158,7 @@ class CandleFetchJobService:
             raise ValueError(f"Data gap cannot be repaired from status: {gap.status}.")
         if gap.status == "repairing" and gap.repair_job_id:
             existing_job = self._fetch_job_repository.get(gap.repair_job_id)
-            if existing_job is not None and existing_job.status in {"pending", "running", "pausing", "paused"}:
+            if existing_job is not None and existing_job.status in {"pending", "running", "pausing", "paused", "cancelling"}:
                 return DataGapRepairResult(gap=gap, job=existing_job, should_start_job=False)
 
         job = self.create_fetch_job(
@@ -137,6 +193,10 @@ class CandleFetchJobService:
         return DataGapRepairResult(gap=updated_gap, job=job, should_start_job=True)
 
     def create_fetch_job(self, command: CandleFetchJobCreateCommand) -> CandleFetchJob:
+        with self._execution_store.admission() if self._execution_store else nullcontext():
+            return self._create_fetch_job(command)
+
+    def _create_fetch_job(self, command: CandleFetchJobCreateCommand) -> CandleFetchJob:
         interval = CandleInterval.parse(command.interval)
         pair = MarketPair.parse(command.market_pair)
         requested_start_time_ms = datetime_to_ms(command.start_time)
@@ -357,59 +417,96 @@ class CandleFetchJobService:
         )
 
     def _validate_status_filter(self, status: list[str] | None) -> None:
-        valid_statuses = {"pending", "running", "pausing", "paused", "success", "failed", "cancelled"}
+        valid_statuses = {"pending", "running", "pausing", "paused", "cancelling", "success", "failed", "cancelled"}
         if status:
             invalid = sorted(set(status) - valid_statuses)
             if invalid:
                 raise ValueError(f"Unsupported fetch job status: {', '.join(invalid)}.")
 
     def cancel_job(self, job_id: str) -> CandleFetchJob:
-        job = self.get_job(job_id)
-        if job.status not in {"pending", "running", "pausing", "paused"}:
-            raise ValueError(
-                "Only pending, running, pausing, or paused fetch jobs can be cancelled. "
-                f"Current status: {job.status}."
-            )
+        with self._execution_store.atomic() if self._execution_store else nullcontext():
+            job = self.get_job(job_id)
+            if job.status in {"cancelled", "cancelling"}:
+                return job
+            if job.status not in {"pending", "running", "pausing", "paused", "cancelling"}:
+                raise JobConflict(
+                    "Only pending, running, pausing, or paused fetch jobs can be cancelled. "
+                    f"Current status: {job.status}."
+                )
 
-        cancelled_job = self._fetch_job_repository.mark_cancelled(
-            job_id=job.id,
-            error_message=CANCELLED_BY_USER_MESSAGE,
-        )
-        logger.info("fetch job cancelled job_id=%s previous_status=%s", job.id, job.status)
-        return cancelled_job
+            cancelled_job = self._fetch_job_repository.mark_cancelled(
+                job_id=job.id,
+                error_message=CANCELLED_BY_USER_MESSAGE,
+            )
+            logger.info("fetch job cancelled job_id=%s previous_status=%s", job.id, job.status)
+            return cancelled_job
 
     def pause_job(self, job_id: str) -> CandleFetchJob:
-        job = self.get_job(job_id)
-        if job.status == "paused":
-            return job
-        if job.status == "pausing":
-            return job
-        if job.status == "pending":
-            paused_job = self._fetch_job_repository.mark_paused(
-                job_id=job.id,
-                error_message=PAUSED_BY_USER_MESSAGE,
-            )
-            logger.info("fetch job paused job_id=%s previous_status=%s", job.id, job.status)
-            return paused_job
-        if job.status == "running":
-            pausing_job = self._fetch_job_repository.mark_pause_requested(
-                job_id=job.id,
-                error_message=PAUSE_REQUESTED_BY_USER_MESSAGE,
-            )
-            logger.info("fetch job pause requested job_id=%s previous_status=%s", job.id, job.status)
-            return pausing_job
-        raise ValueError(f"Only pending or running fetch jobs can be paused. Current status: {job.status}.")
+        with self._execution_store.atomic() if self._execution_store else nullcontext():
+            job = self.get_job(job_id)
+            if job.status == "paused":
+                return job
+            if job.status == "pausing":
+                return job
+            if job.status == "pending":
+                paused_job = self._fetch_job_repository.mark_paused(
+                    job_id=job.id,
+                    error_message=PAUSED_BY_USER_MESSAGE,
+                )
+                logger.info("fetch job paused job_id=%s previous_status=%s", job.id, job.status)
+                return paused_job
+            if job.status == "running":
+                pausing_job = self._fetch_job_repository.mark_pause_requested(
+                    job_id=job.id,
+                    error_message=PAUSE_REQUESTED_BY_USER_MESSAGE,
+                )
+                logger.info("fetch job pause requested job_id=%s previous_status=%s", job.id, job.status)
+                return pausing_job
+            raise JobConflict(f"Only pending or running fetch jobs can be paused. Current status: {job.status}.")
 
     def resume_job(self, job_id: str) -> CandleFetchJob:
-        job = self.get_job(job_id)
-        if job.status not in {"paused", "pausing"}:
-            raise ValueError(f"Only paused or pausing fetch jobs can be resumed. Current status: {job.status}.")
+        with self._execution_store.atomic() if self._execution_store else nullcontext():
+            job = self.get_job(job_id)
+            if job.status == "pending":
+                return job
+            if job.status != "paused":
+                raise JobConflict(f"Only paused fetch jobs can be resumed. Current status: {job.status}.")
 
-        resumed_job = self._fetch_job_repository.mark_pending(job_id=job.id, error_message=None)
-        logger.info("fetch job resumed job_id=%s previous_status=%s", job.id, job.status)
-        return resumed_job
+            resumed_job = self._fetch_job_repository.mark_pending(job_id=job.id, error_message=None)
+            logger.info("fetch job resumed job_id=%s previous_status=%s", job.id, job.status)
+            return resumed_job
 
-    def run_job(self, job_id: str) -> CandleFetchJob:
+    def run_job(self, job_id: str, *, token: str | None = None, stop_event=None) -> CandleFetchJob:
+        if self._execution_store is None:
+            return self._run_job(job_id)
+        store = self._execution_store
+        if token is None:
+            claimed = store.claim("direct-" + uuid4().hex, job_id=job_id)
+            if claimed is None:
+                return self.get_job(job_id)
+            _, token = claimed
+        try:
+            with store.scope(job_id, token, stop_event):
+                self._run_job(job_id)
+        except (ExecutionInterrupted, ExecutionLost):
+            logger.info("Job execution interrupted job_id=%s", job_id)
+        finally:
+            try:
+                store.release(job_id, token)
+            except ExecutionLost:
+                logger.info("Job execution ownership lost job_id=%s", job_id)
+        return self.get_job(job_id)
+
+    def _finish_job(self, job_id, error_message=None):
+        with self._execution_store.checkpoint() if self._execution_store else nullcontext():
+            if error_message is None:
+                job = self._fetch_job_repository.mark_succeeded(job_id)
+            else:
+                job = self._fetch_job_repository.mark_failed(job_id=job_id, error_message=error_message)
+            self._sync_data_gap_repair_status(job)
+            return job
+
+    def _run_job(self, job_id: str) -> CandleFetchJob:
         job = self.get_job(job_id)
         if job.status not in {"pending", "running"}:
             logger.info("fetch job run skipped job_id=%s status=%s", job.id, job.status)
@@ -417,7 +514,8 @@ class CandleFetchJobService:
             return job
 
         started_at = perf_counter()
-        job = self._fetch_job_repository.mark_running(job.id)
+        if self._execution_store is None:
+            job = self._fetch_job_repository.mark_running(job.id)
         controlled_job = self._get_controlled_job(job.id)
         if controlled_job is not None:
             logger.info("fetch job run stopped before start job_id=%s status=%s", job.id, job.status)
@@ -436,6 +534,7 @@ class CandleFetchJobService:
         )
 
         try:
+            job = self._prepare_query(job)
             completed_job = self._run_manual_backfill(job)
             duration_ms = int((perf_counter() - started_at) * 1000)
             logger.info(
@@ -451,8 +550,10 @@ class CandleFetchJobService:
             )
             self._sync_data_gap_repair_status(completed_job)
             return completed_job
+        except (ExecutionInterrupted, ExecutionLost):
+            raise
         except Exception as exc:
-            failed_job = self._fetch_job_repository.mark_failed(job_id=job.id, error_message=str(exc))
+            failed_job = self._finish_job(job.id, str(exc))
             self._sync_data_gap_repair_status(failed_job)
             logger.exception(
                 "fetch job failed job_id=%s status=%s fetched_count=%s saved_count=%s completed_batch_count=%s duration_ms=%s",
@@ -478,6 +579,7 @@ class CandleFetchJobService:
             logger.info("data gap repair failed job_id=%s repaired_gap_count=%s", job.id, len(repaired_gaps))
 
     def _get_controlled_job(self, job_id: str) -> CandleFetchJob | None:
+        check_execution()
         job = self._fetch_job_repository.get(job_id)
         if job is None:
             return None
@@ -504,8 +606,9 @@ class CandleFetchJobService:
         if controlled_job is not None:
             return controlled_job
 
+        saved_plan = self._execution_store.load_plan(job.id) if self._execution_store else None
         requested_missing_ranges: list[OpenTimeRange] | None = None
-        if job.mode == "fill_gaps":
+        if job.mode == "fill_gaps" and saved_plan is None:
             requested_missing_ranges = _find_repository_missing_ranges(
                 repository=self._candle_repository,
                 provider=job.provider,
@@ -535,14 +638,17 @@ class CandleFetchJobService:
                     total_batch_count=0,
                     progress_percent=100,
                 )
-                return self._fetch_job_repository.mark_succeeded(job.id)
+                return self._finish_job(job.id)
 
-        provider_start_open_time_ms = self._resolve_provider_start_open_time_ms(
-            job=job,
-            provider=provider,
-            interval=interval,
-            effective_end_open_time_ms=effective_end_open_time_ms,
-        )
+        if saved_plan is not None:
+            provider_start_open_time_ms = saved_plan["effective_start_time_ms"]
+        else:
+            provider_start_open_time_ms = self._resolve_provider_start_open_time_ms(
+                job=job,
+                provider=provider,
+                interval=interval,
+                effective_end_open_time_ms=effective_end_open_time_ms,
+            )
         controlled_job = self._get_controlled_job(job.id)
         if controlled_job is not None:
             return controlled_job
@@ -594,7 +700,7 @@ class CandleFetchJobService:
                 total_batch_count=0,
                 progress_percent=100,
             )
-            return self._fetch_job_repository.mark_succeeded(job.id)
+            return self._finish_job(job.id)
 
         effective_start_time_ms = provider_start_open_time_ms
         if effective_start_time_ms > job.requested_start_time_ms:
@@ -610,7 +716,9 @@ class CandleFetchJobService:
                 effective_start_time_ms,
                 skipped_count,
             )
-        if job.mode == "fill_gaps":
+        if saved_plan is not None:
+            fetch_ranges = [OpenTimeRange(**item) for item in saved_plan["ranges"]]
+        elif job.mode == "fill_gaps":
             missing_ranges = _find_repository_missing_ranges(
                 repository=self._candle_repository,
                 provider=job.provider,
@@ -635,6 +743,13 @@ class CandleFetchJobService:
                 )
             ]
 
+        if self._execution_store and saved_plan is None:
+            self._execution_store.save_plan(job.id, {
+                "effective_start_time_ms": effective_start_time_ms,
+                "ranges": [asdict(item) for item in fetch_ranges],
+            })
+
+        full_fetch_ranges = list(fetch_ranges)
         full_total_estimated_count = _count_open_time_ranges(
             ranges=fetch_ranges,
             interval_ms=interval.milliseconds,
@@ -678,16 +793,11 @@ class CandleFetchJobService:
         missing_count = job.missing_count
         completed_batch_count = job.completed_batch_count
         provider_unavailable_ranges: list[OpenTimeRange] = []
-        completed_fetch_count = (
-            _count_completed_before_cursor(
-                start_open_time_ms=effective_start_time_ms,
-                cursor_open_time_ms=resume_cursor_time_ms,
-                interval_ms=interval.milliseconds,
-            )
-            if resume_cursor_time_ms is not None
-            else 0
-        )
-
+        completed_fetch_count = sum(
+            max(0, (min(item.end_open_time_ms, (resume_cursor_time_ms or item.start_open_time_ms) - interval.milliseconds)
+                    - item.start_open_time_ms) // interval.milliseconds + 1)
+            for item in full_fetch_ranges
+        ) if is_resuming else 0
         logger.info(
             "fetch job effective range resolved job_id=%s mode=%s requested_start_time_ms=%s effective_start_time_ms=%s effective_end_open_time_ms=%s fetch_range_count=%s total_estimated_count=%s total_batch_count=%s overlap_candles=%s resume_cursor_time_ms=%s",
             job.id,
@@ -796,12 +906,78 @@ class CandleFetchJobService:
                             end_open_time_ms=batch_end_open_time_ms,
                         )
                     )
+                    batch_id = f"{cursor}:{batch_end_open_time_ms}"
+                    with self._execution_store.batch(job.id, batch_id) if self._execution_store else nullcontext():
+                        completed_batch_count += 1
+                        cursor = batch_end_open_time_ms + interval.milliseconds
+                        expected_next_open_time_ms = cursor
+                        range_completed_count = _count_expected_candles(
+                            start_open_time_ms=fetch_range.start_open_time_ms,
+                            end_open_time_ms=batch_end_open_time_ms,
+                            interval_ms=interval.milliseconds,
+                        )
+                        progress_percent = _calculate_progress_percent(
+                            completed_count=min(total_estimated_count, completed_fetch_count + range_completed_count),
+                            total_estimated_count=total_estimated_count,
+                        )
+                        job = self._fetch_job_repository.update_progress(
+                            job_id=job.id,
+                            effective_start_time_ms=effective_start_time_ms,
+                            current_cursor_time_ms=cursor,
+                            total_estimated_count=total_estimated_count,
+                            fetched_count=fetched_count,
+                            saved_count=saved_count,
+                            failed_count=failed_count,
+                            missing_count=missing_count,
+                            completed_batch_count=completed_batch_count,
+                            total_batch_count=total_batch_count,
+                            progress_percent=progress_percent,
+                        )
+                    continue
+
+                if job.verify_continuity:
+                    provider_unavailable_ranges.extend(
+                        _find_batch_missing_ranges(
+                            expected_next_open_time_ms=expected_next_open_time_ms,
+                            candles=accepted_candles,
+                            interval_ms=interval.milliseconds,
+                            job_id=job.id,
+                            batch_index=batch_index,
+                        )
+                    )
+
+                batch_id = f"{cursor}:{batch_end_open_time_ms}"
+                with self._execution_store.batch(job.id, batch_id) if self._execution_store else nullcontext():
+                    batch_saved_count = self._store_batch(
+                        job=job,
+                        candles=accepted_candles,
+                        start_open_time_ms=cursor,
+                        end_open_time_ms=batch_end_open_time_ms,
+                    )
+                    fetched_count += len(accepted_candles)
+                    saved_count += batch_saved_count
                     completed_batch_count += 1
-                    cursor = batch_end_open_time_ms + interval.milliseconds
-                    expected_next_open_time_ms = cursor
+                    last_open_time_ms = accepted_candles[-1].open_time_ms
+                    next_cursor_no_overlap = last_open_time_ms + interval.milliseconds
+                    should_continue = (
+                        len(accepted_candles) >= batch_limit
+                        and next_cursor_no_overlap <= fetch_range.end_open_time_ms
+                    )
+                    cursor = (
+                        _calculate_next_cursor_with_overlap(
+                            current_cursor_time_ms=cursor,
+                            next_cursor_no_overlap=next_cursor_no_overlap,
+                            interval_ms=interval.milliseconds,
+                            overlap_candles=job.overlap_candles,
+                            accepted_count=len(accepted_candles),
+                        )
+                        if should_continue
+                        else next_cursor_no_overlap
+                    )
+                    expected_next_open_time_ms = max(expected_next_open_time_ms, next_cursor_no_overlap)
                     range_completed_count = _count_expected_candles(
                         start_open_time_ms=fetch_range.start_open_time_ms,
-                        end_open_time_ms=batch_end_open_time_ms,
+                        end_open_time_ms=min(last_open_time_ms, fetch_range.end_open_time_ms),
                         interval_ms=interval.milliseconds,
                     )
                     progress_percent = _calculate_progress_percent(
@@ -821,68 +997,6 @@ class CandleFetchJobService:
                         total_batch_count=total_batch_count,
                         progress_percent=progress_percent,
                     )
-                    continue
-
-                if job.verify_continuity:
-                    provider_unavailable_ranges.extend(
-                        _find_batch_missing_ranges(
-                            expected_next_open_time_ms=expected_next_open_time_ms,
-                            candles=accepted_candles,
-                            interval_ms=interval.milliseconds,
-                            job_id=job.id,
-                            batch_index=batch_index,
-                        )
-                    )
-
-                batch_saved_count = self._store_batch(
-                    job=job,
-                    candles=accepted_candles,
-                    start_open_time_ms=cursor,
-                    end_open_time_ms=batch_end_open_time_ms,
-                )
-                fetched_count += len(accepted_candles)
-                saved_count += batch_saved_count
-                completed_batch_count += 1
-                last_open_time_ms = accepted_candles[-1].open_time_ms
-                next_cursor_no_overlap = last_open_time_ms + interval.milliseconds
-                should_continue = (
-                    len(accepted_candles) >= batch_limit
-                    and next_cursor_no_overlap <= fetch_range.end_open_time_ms
-                )
-                cursor = (
-                    _calculate_next_cursor_with_overlap(
-                        current_cursor_time_ms=cursor,
-                        next_cursor_no_overlap=next_cursor_no_overlap,
-                        interval_ms=interval.milliseconds,
-                        overlap_candles=job.overlap_candles,
-                        accepted_count=len(accepted_candles),
-                    )
-                    if should_continue
-                    else next_cursor_no_overlap
-                )
-                expected_next_open_time_ms = max(expected_next_open_time_ms, next_cursor_no_overlap)
-                range_completed_count = _count_expected_candles(
-                    start_open_time_ms=fetch_range.start_open_time_ms,
-                    end_open_time_ms=min(last_open_time_ms, fetch_range.end_open_time_ms),
-                    interval_ms=interval.milliseconds,
-                )
-                progress_percent = _calculate_progress_percent(
-                    completed_count=min(total_estimated_count, completed_fetch_count + range_completed_count),
-                    total_estimated_count=total_estimated_count,
-                )
-                job = self._fetch_job_repository.update_progress(
-                    job_id=job.id,
-                    effective_start_time_ms=effective_start_time_ms,
-                    current_cursor_time_ms=cursor,
-                    total_estimated_count=total_estimated_count,
-                    fetched_count=fetched_count,
-                    saved_count=saved_count,
-                    failed_count=failed_count,
-                    missing_count=missing_count,
-                    completed_batch_count=completed_batch_count,
-                    total_batch_count=total_batch_count,
-                    progress_percent=progress_percent,
-                )
                 controlled_job = self._get_controlled_job(job.id)
                 if controlled_job is not None:
                     return controlled_job
@@ -925,7 +1039,7 @@ class CandleFetchJobService:
                 start_open_time_ms=effective_start_time_ms,
                 end_open_time_ms=effective_end_open_time_ms,
                 interval_ms=interval.milliseconds,
-                excluded_ranges=provider_unavailable_ranges,
+                excluded_ranges=provider_unavailable_ranges if self._execution_store is None else None,
             )
             final_missing_count = _count_open_time_ranges(
                 ranges=final_missing_ranges,
@@ -981,7 +1095,7 @@ class CandleFetchJobService:
         controlled_job = self._get_controlled_job(job.id)
         if controlled_job is not None:
             return controlled_job
-        return self._fetch_job_repository.mark_succeeded(job.id)
+        return self._finish_job(job.id)
 
     def _record_detected_data_gaps(
         self,

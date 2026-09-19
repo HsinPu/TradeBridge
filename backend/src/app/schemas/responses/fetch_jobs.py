@@ -46,10 +46,19 @@ class CandleFetchJobResponse(BaseModel):
     created_at: str
     updated_at: str
 
+    recovery_count: int = 0
+    recovery_reason: str | None = None
+    attempt_count: int = 0
+    waiting_reason: str | None = None
+
     @classmethod
     def from_job(cls, job: CandleFetchJob) -> "CandleFetchJobResponse":
         return cls(
             id=job.id,
+            recovery_count=job.recovery_count,
+            recovery_reason=job.recovery_reason,
+            attempt_count=job.attempt_count,
+            waiting_reason=job.waiting_reason,
             job_type=job.job_type,
             status=job.status,
             schedule_id=job.schedule_id,

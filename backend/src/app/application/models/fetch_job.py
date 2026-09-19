@@ -59,6 +59,11 @@ class CandleFetchJob:
     schedule_id: str | None = None
     trigger_type: str = "manual"
 
+    recovery_count: int = 0
+    recovery_reason: str | None = None
+    attempt_count: int = 0
+    waiting_reason: str | None = None
+
 
 @dataclass(frozen=True)
 class CandleFetchJobSummary:

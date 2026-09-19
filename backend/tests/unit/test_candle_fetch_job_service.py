@@ -1,3 +1,4 @@
+import pytest
 from dataclasses import replace
 from datetime import datetime, timezone
 
@@ -387,7 +388,7 @@ def test_pending_fetch_job_can_be_paused_before_running_and_resumed(tmp_path) ->
     assert [call.start_time_ms for call in provider.calls] == [0, 120_000]
 
 
-def test_pausing_fetch_job_can_be_resumed_before_pause_checkpoint(tmp_path) -> None:
+def test_pausing_fetch_job_cannot_resume_before_pause_checkpoint(tmp_path) -> None:
     candle_repository = MemoryCandleRepository()
     fetch_job_repository = SQLiteFetchJobRepository(str(tmp_path / "tradebridge.db"))
     fetch_job_repository.initialize()
@@ -418,15 +419,10 @@ def test_pausing_fetch_job_can_be_resumed_before_pause_checkpoint(tmp_path) -> N
     fetch_job_repository.mark_running(job.id)
 
     pausing_job = service.pause_job(job.id)
-    resumed_job = service.resume_job(job.id)
-    completed_job = service.run_job(job.id)
-
+    with pytest.raises(ValueError, match="Only paused fetch jobs"):
+        service.resume_job(job.id)
     assert pausing_job.status == "pausing"
-    assert resumed_job.status == "pending"
-    assert resumed_job.error_message is None
-    assert completed_job.status == "success"
-    assert sorted(candle_repository.candles) == [0, 60_000, 120_000]
-    assert [call.start_time_ms for call in provider.calls] == [0, 120_000]
+    assert service.get_job(job.id).status == "pausing"
 
 
 def test_running_fetch_job_stops_when_cancelled_between_batches(tmp_path) -> None:

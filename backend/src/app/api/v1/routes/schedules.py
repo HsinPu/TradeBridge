@@ -1,4 +1,6 @@
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from app.api.v1.job_submission import submit_job
+from app.application.ports.job_execution_store import JobConflict
+from fastapi import APIRouter, Header, Depends, HTTPException, Query, status
 
 from app.api.v1.dependencies import get_candle_fetch_job_service, get_schedule_service
 from app.application.services.candle_fetch_job_service import CandleFetchJobService
@@ -21,6 +23,8 @@ def list_schedules(
     try:
         count = service.count_schedules(provider=provider, enabled=enabled)
         schedules = service.list_schedules(provider=provider, enabled=enabled, limit=limit, offset=offset)
+    except JobConflict:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     responses = [ScheduleResponse.from_schedule(schedule) for schedule in schedules]
@@ -36,6 +40,8 @@ def create_schedule(
         schedule = service.create_schedule(request.to_command())
     except DuplicateScheduleError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except JobConflict:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return ScheduleResponse.from_schedule(schedule)
@@ -48,6 +54,8 @@ def get_schedule(
 ) -> ScheduleResponse:
     try:
         schedule = service.get_schedule(schedule_id)
+    except JobConflict:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return ScheduleResponse.from_schedule(schedule)
@@ -63,6 +71,8 @@ def update_schedule(
         schedule = service.update_schedule(schedule_id, request.to_command())
     except DuplicateScheduleError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except JobConflict:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return ScheduleResponse.from_schedule(schedule)
@@ -75,6 +85,8 @@ def delete_schedule(
 ) -> None:
     try:
         service.delete_schedule(schedule_id)
+    except JobConflict:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -86,6 +98,8 @@ def enable_schedule(
 ) -> ScheduleResponse:
     try:
         schedule = service.set_enabled(schedule_id, True)
+    except JobConflict:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return ScheduleResponse.from_schedule(schedule)
@@ -98,6 +112,8 @@ def resume_schedule(
 ) -> ScheduleResponse:
     try:
         schedule = service.set_enabled(schedule_id, True)
+    except JobConflict:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return ScheduleResponse.from_schedule(schedule)
@@ -110,6 +126,8 @@ def disable_schedule(
 ) -> ScheduleResponse:
     try:
         schedule = service.set_enabled(schedule_id, False)
+    except JobConflict:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return ScheduleResponse.from_schedule(schedule)
@@ -122,6 +140,8 @@ def pause_schedule(
 ) -> ScheduleResponse:
     try:
         schedule = service.set_enabled(schedule_id, False)
+    except JobConflict:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return ScheduleResponse.from_schedule(schedule)
@@ -130,13 +150,18 @@ def pause_schedule(
 @router.post("/{schedule_id}/run-now", response_model=CandleFetchJobResponse, status_code=status.HTTP_202_ACCEPTED)
 def run_schedule_now(
     schedule_id: str,
-    background_tasks: BackgroundTasks,
+    idempotency_key: str | None = Header(default=None, min_length=1, max_length=200),
     service: ScheduleService = Depends(get_schedule_service),
     fetch_job_service: CandleFetchJobService = Depends(get_candle_fetch_job_service),
 ) -> CandleFetchJobResponse:
     try:
-        job = service.create_job_from_schedule(schedule_id)
+        if idempotency_key:
+            job = submit_job(fetch_job_service, idempotency_key, {"route": "run-now", "schedule_id": schedule_id},
+                             lambda: service.create_job_from_schedule(schedule_id))
+        else:
+            job = service.create_job_from_schedule(schedule_id)
+    except JobConflict:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    background_tasks.add_task(fetch_job_service.run_job, job.id)
     return CandleFetchJobResponse.from_job(job)

@@ -24,19 +24,18 @@ class FakeFetchJobService:
         self.run_job_ids.append(job_id)
 
 
-def test_schedule_runner_run_once_runs_due_jobs() -> None:
+def test_schedule_runner_run_once_enqueues_due_jobs() -> None:
     schedule_service = FakeScheduleService()
     fetch_job_service = FakeFetchJobService()
     runner = ScheduleRunner(
         schedule_service=schedule_service,
-        fetch_job_service=fetch_job_service,
         poll_seconds=1,
     )
 
     runner.run_once()
 
     assert schedule_service.create_due_jobs_called is True
-    assert fetch_job_service.run_job_ids == ["job-1", "job-2"]
+    assert fetch_job_service.run_job_ids == []
 
 
 def test_schedule_runner_run_once_catches_loop_errors(monkeypatch) -> None:
@@ -44,10 +43,9 @@ def test_schedule_runner_run_once_catches_loop_errors(monkeypatch) -> None:
     fetch_job_service = FakeFetchJobService()
     runner = ScheduleRunner(
         schedule_service=schedule_service,
-        fetch_job_service=fetch_job_service,
         poll_seconds=1,
     )
-    monkeypatch.setattr(schedule_runner, "sleep", lambda seconds: None)
+    monkeypatch.setattr(runner._stop_event, "wait", lambda seconds: None)
 
     runner.run_once()
 

@@ -1,4 +1,6 @@
+from app.application.ports.job_execution_store import JobConflict
 from dataclasses import replace
+from contextlib import nullcontext
 from datetime import datetime, timezone
 import logging
 from uuid import uuid4
@@ -30,10 +32,12 @@ class ScheduleService:
         schedule_repository: ScheduleRepository,
         fetch_job_repository: FetchJobRepository,
         fetch_job_service: CandleFetchJobService,
+        execution_store=None,
     ) -> None:
         self._schedule_repository = schedule_repository
         self._fetch_job_repository = fetch_job_repository
         self._fetch_job_service = fetch_job_service
+        self._execution_store = execution_store
 
     def create_schedule(self, command: ScheduleCreateCommand) -> Schedule:
         cron_expression = _normalize_cron_expression(command.cron_expression)
@@ -209,14 +213,23 @@ class ScheduleService:
             raise ValueError(f"Schedule not found: {schedule_id}")
 
     def create_job_from_schedule(self, schedule_id: str) -> CandleFetchJob:
-        schedule = self.get_schedule(schedule_id)
-        return self._create_job_from_schedule(schedule)
+        with self._execution_store.admission() if self._execution_store else nullcontext():
+            schedule = self.get_schedule(schedule_id)
+            if self._fetch_job_repository.has_active_job_for_schedule(schedule_id):
+                raise JobConflict("Schedule already has an unfinished job")
+            return self._create_job_from_schedule(schedule)
 
     def create_due_jobs(self, *, due_at: datetime | None = None, limit: int = 20) -> list[CandleFetchJob]:
+        with self._execution_store.admission() if self._execution_store else nullcontext():
+            return self._create_due_jobs(due_at=due_at, limit=limit)
+
+    def _create_due_jobs(self, *, due_at=None, limit=20):
         due_at = due_at or datetime.now(timezone.utc)
         due_at_ms = _datetime_to_ms(due_at)
         jobs: list[CandleFetchJob] = []
         for schedule in self._schedule_repository.list_due(due_at_ms=due_at_ms, limit=limit):
+            if self._execution_store and not self._execution_store.record_trigger(schedule.id, schedule.next_run_at_ms):
+                continue
             next_run_at_ms = _next_run_ms(schedule.cron_expression, after=due_at)
             if self._fetch_job_repository.has_active_job_for_schedule(schedule.id):
                 logger.info("schedule skipped because active job exists schedule_id=%s", schedule.id)
