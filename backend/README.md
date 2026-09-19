@@ -5,10 +5,16 @@ provider payload in SQLite.
 
 ## Run locally
 
-```powershell
-$env:PYTHONPATH="backend/src"
-uvicorn app.main:app --reload --reload-dir backend/src
+Run from the repository root (Python 3.11+ and uv required):
+
+```sh
+uv sync --extra dev
+uv run --env-file env.example uvicorn app.main:app --host 127.0.0.1 --port 8025 --reload --reload-dir backend/src
 ```
+
+For the complete frontend and backend with Docker Compose, see the
+[root README](../README.md). The application reads system environment variables;
+the command above uses uv to load `env.example` explicitly.
 
 ## API
 
