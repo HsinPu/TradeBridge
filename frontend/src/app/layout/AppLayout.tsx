@@ -10,7 +10,7 @@ import {
   QuestionCircleOutlined,
   SettingOutlined
 } from "@ant-design/icons";
-import { Badge, Button, Layout, Menu, Tag, Typography } from "antd";
+import { Button, Layout, Menu, Typography } from "antd";
 import type { ReactNode } from "react";
 import { useState } from "react";
 
@@ -69,8 +69,6 @@ export function AppLayout({
           </div>
         </div>
         <div className="topbar-actions">
-          <Tag color="geekblue" className="environment-tag">{t.app.local}</Tag>
-          <Badge status="success" text={<span className="status-text">{t.app.apiReady}</span>} />
           <Button icon={<QuestionCircleOutlined />} className="topbar-icon-button" aria-label="Help" />
           <Button icon={<BellOutlined />} className="topbar-icon-button" aria-label="Notifications" />
           <Button icon={<ApiOutlined />} className="header-action">
