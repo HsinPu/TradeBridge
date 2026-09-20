@@ -206,6 +206,21 @@ select {
   padding: 0 12px 18px;
 }
 
+.sidebar-version {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 12px;
+  color: #64748b;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.app-sidebar-collapsed .sidebar-version {
+  padding-inline: 0;
+  text-align: center;
+}
+
 .collapse-button {
   justify-content: flex-start;
   width: 100%;
@@ -215,6 +230,7 @@ select {
 
 .app-sidebar-collapsed .sidebar-footer {
   display: flex;
+  flex-direction: column;
   justify-content: flex-start;
   padding-inline: 8px;
 }

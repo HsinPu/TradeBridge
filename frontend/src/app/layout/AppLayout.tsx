@@ -96,6 +96,14 @@ export function AppLayout({
             items={navItems}
           />
           <div className="sidebar-footer">
+            <div
+              className="sidebar-version"
+              title={`${language === "zh-TW" ? "前端版本" : "Frontend version"}: v${__APP_VERSION__}`}
+              aria-label={`${language === "zh-TW" ? "前端版本" : "Frontend version"}: v${__APP_VERSION__}`}
+            >
+              {!sidebarCollapsed && <span>{language === "zh-TW" ? "前端版本" : "Frontend version"}</span>}
+              <span>v{__APP_VERSION__}</span>
+            </div>
             <Button
               type="text"
               icon={sidebarCollapsed ? <DoubleRightOutlined /> : <DoubleLeftOutlined />}

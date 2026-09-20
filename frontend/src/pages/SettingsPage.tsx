@@ -1588,6 +1588,14 @@ export function SettingsPage({ messages, language, onLanguageChange }: SettingsP
           >
             <div className="settings-security-summary">
               <div>
+                <span>{language === "zh-TW" ? "前端版本" : "Frontend version"}</span>
+                <strong>v{__APP_VERSION__}</strong>
+              </div>
+              <div>
+                <span>{language === "zh-TW" ? "後端版本" : "Backend version"}</span>
+                <strong>{runtimeStatus?.version ? `v${runtimeStatus.version}` : language === "zh-TW" ? "無法取得" : "Unavailable"}</strong>
+              </div>
+              <div>
                 <span>{t.runtime}</span>
                 <Tag color={runtimeTagColor} className="settings-runtime-tag">
                   {runtimeStatus?.runtime ?? t.local}
