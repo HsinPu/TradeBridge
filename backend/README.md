@@ -9,12 +9,14 @@ Run from the repository root (Python 3.11+ and uv required):
 
 ```sh
 uv sync --extra dev
-uv run --env-file env.example uvicorn app.main:app --host 127.0.0.1 --port 8025 --reload --reload-dir backend/src
+uv run --env-file env.example --env-file .env uvicorn app.main:app --host 127.0.0.1 --port 8025 --reload --reload-dir backend/src
 ```
 
 For the complete frontend and backend with Docker Compose, see the
 [root README](../README.md). The application reads system environment variables;
-the command above uses uv to load `env.example` explicitly.
+the command above loads env.example and the private .env. ADMIN_USERNAME,
+ADMIN_PASSWORD and a random LOCAL_PROXY_TOKEN are required. Direct backend
+access requires login even with APP_ENV=local. Never publish the backend port.
 
 ## API
 
@@ -94,3 +96,19 @@ Use the job `id` to correlate `fetch job created`, `fetch job started`, batch
 completion, interruption and completion/failure logs. Provider requests use the
 same ID as `fetch_id`. `/api/v1/runtime/status` also reports executor health,
 capacity, running/queued counts and the last dispatcher scan.
+
+## Admin authentication
+
+Public auth endpoints under APP_BASE_PATH + API_PREFIX:
+- GET /auth/session: login_required, authenticated, username (null when anonymous or local).
+- POST /auth/login: JSON username/password; HttpOnly session cookie, expires after 12 hours.
+- POST /auth/logout: revoke session and clear cookie (204).
+
+All admin writes, including login/logout, require an allowed Origin and
+X-TradeBridge-Request: 1. Missing admin authentication returns 401 with
+code AUTH_REQUIRED; CSRF failures return 403; login throttling returns 429
+with Retry-After. No credential values are included in validation responses.
+Health remains anonymous. Docs and OpenAPI require admin access; programmatic
+admin calls must log in first. External read-only API keys remain independent.
+Only the trusted loopback Nginx listener injects the local bypass secret;
+the protected listener strips user-supplied bypass headers. See the root README.

@@ -1,3 +1,4 @@
+from conftest import management_headers
 from fastapi.testclient import TestClient
 
 from app.api.v1 import dependencies
@@ -13,7 +14,7 @@ def _client(tmp_path, monkeypatch) -> TestClient:
     dependencies.get_schedule_repository.cache_clear()
     dependencies.get_market_repository.cache_clear()
     dependencies.get_market_data_provider_registry.cache_clear()
-    return TestClient(create_app())
+    return TestClient(create_app(), headers=management_headers())
 
 
 def test_markets_api_crud(tmp_path, monkeypatch) -> None:

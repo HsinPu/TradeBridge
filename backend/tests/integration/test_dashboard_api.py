@@ -1,3 +1,4 @@
+from conftest import management_headers
 from fastapi.testclient import TestClient
 
 from app.api.v1 import dependencies
@@ -104,7 +105,7 @@ def _client(tmp_path, monkeypatch, service: FakeDashboardService) -> TestClient:
     dependencies.get_market_data_provider_registry.cache_clear()
     app = create_app()
     app.dependency_overrides[dependencies.get_dashboard_service] = lambda: service
-    return TestClient(app)
+    return TestClient(app, headers=management_headers())
 
 
 def test_dashboard_overview_api_delegates_to_service(tmp_path, monkeypatch) -> None:

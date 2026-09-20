@@ -1,3 +1,4 @@
+from conftest import management_headers
 import pytest
 from fastapi.testclient import TestClient
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
@@ -23,7 +24,7 @@ def deployment_client(request, tmp_path, monkeypatch):
     app = create_app()
     app.dependency_overrides[dependencies.get_market_service] = lambda: MarketService(market_repository=market_repo)
     # No lifespan: these tests must not start schedulers or touch the user's DB.
-    client = TestClient(ProxyHeadersMiddleware(app, trusted_hosts=["testclient"]))
+    client = TestClient(ProxyHeadersMiddleware(app, trusted_hosts=["testclient"]), headers=management_headers())
     try:
         yield client, request.param.rstrip("/")
     finally:

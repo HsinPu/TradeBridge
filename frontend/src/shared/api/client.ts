@@ -28,7 +28,12 @@ export async function apiRequest<TResponse>(
 ): Promise<TResponse> {
   const response = await fetch(`${apiBaseUrl}${path}`, {
     method: options.method ?? "GET",
-    headers: { ...(options.body === undefined ? {} : { "Content-Type": "application/json" }), ...options.headers },
+    credentials: "include",
+    headers: {
+      ...(options.body === undefined ? {} : { "Content-Type": "application/json" }),
+      ...(options.method && !["GET"].includes(options.method) ? { "X-TradeBridge-Request": "1" } : {}),
+      ...options.headers
+    },
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
     signal: options.signal
   });
@@ -36,11 +41,14 @@ export async function apiRequest<TResponse>(
   if (!response.ok) {
     let detail: unknown = null;
     try {
-      detail = await response.json();
+      detail = await response.clone().json();
     } catch {
       detail = await response.text();
     }
 
+    if (response.status === 401 && typeof detail === "object" && detail !== null && "code" in detail && detail.code === "AUTH_REQUIRED") {
+      window.dispatchEvent(new Event("tradebridge:auth-required"));
+    }
     throw new ApiError(`API request failed with ${response.status}`, response.status, detail);
   }
 

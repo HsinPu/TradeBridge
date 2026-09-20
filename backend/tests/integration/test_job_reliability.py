@@ -254,7 +254,8 @@ def test_query_api_is_durable_and_idempotent(rig, monkeypatch):
     app = create_app()
     app.dependency_overrides[get_candle_fetch_job_service] = lambda: rig.service
     monkeypatch.setattr(job_submission, "get_job_execution_store", lambda: rig.store)
-    client = TestClient(app)  # No lifespan: verify HTTP only persists, never executes.
+    from conftest import management_headers
+    client = TestClient(app, headers=management_headers())  # No lifespan: verify HTTP only persists, never executes.
     request = {"mode": "latest", "end_time": "1970-01-01T00:04:59Z", "closed_only": False, "limit": 5, "batch_limit": 2}
     response = client.post("/api/v1/candles/fetch", json=request, headers={"Idempotency-Key": "query"})
     assert response.status_code == 202, response.text
@@ -492,7 +493,8 @@ def test_startup_reconciles_before_starting_workers(rig, repair, monkeypatch):
     from app.infrastructure.scheduler.job_runner import JobRunner
     with connect_sqlite(rig.path) as db:
         db.execute("UPDATE fetch_jobs SET status='cancelled' WHERE id=?", (repair.job.id,))
-    monkeypatch.setattr(main, "get_settings", lambda: Settings(database_path=rig.path, scheduler_enabled=False))
+    settings = replace(main.get_settings(), database_path=rig.path, scheduler_enabled=False)
+    monkeypatch.setattr(main, "get_settings", lambda: settings)
     monkeypatch.setattr(dependencies, "get_candle_fetch_job_service", lambda: rig.service)
     monkeypatch.setattr(dependencies, "get_schedule_service", lambda: None)
     monkeypatch.setattr(dependencies, "get_job_execution_store", lambda: rig.store)

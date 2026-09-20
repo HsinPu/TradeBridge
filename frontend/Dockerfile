@@ -19,9 +19,10 @@ ENV APP_BASE_PATH=${APP_BASE_PATH} \
 
 COPY nginx.conf /etc/nginx/templates/default.conf.template
 COPY nginx-proxy.conf /etc/nginx/tradebridge-proxy.conf
+COPY nginx-routes.conf /etc/nginx/tradebridge-routes.conf
 COPY docker-entrypoint.d/15-app-base-path.sh /docker-entrypoint.d/15-app-base-path.sh
 RUN sed -i 's/\r$//' /docker-entrypoint.d/15-app-base-path.sh && chmod +x /docker-entrypoint.d/15-app-base-path.sh
 COPY --from=build /app/app-base-path /etc/nginx/app-base-path
 COPY --from=build /app/dist /usr/share/nginx/html
 
-EXPOSE 8080
+EXPOSE 8080 8081

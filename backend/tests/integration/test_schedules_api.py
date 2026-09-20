@@ -1,3 +1,4 @@
+from conftest import management_headers
 from fastapi.testclient import TestClient
 
 from app.api.v1 import dependencies
@@ -239,7 +240,7 @@ def _client(
     app.dependency_overrides[dependencies.get_candle_fetch_job_service] = (
         lambda: fetch_job_service or FakeFetchJobService()
     )
-    return TestClient(app)
+    return TestClient(app, headers=management_headers())
 
 
 def _make_schedule(

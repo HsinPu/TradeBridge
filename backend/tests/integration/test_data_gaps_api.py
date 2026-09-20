@@ -1,3 +1,4 @@
+from conftest import management_headers
 from fastapi.testclient import TestClient
 
 from app.api.v1 import dependencies
@@ -107,7 +108,7 @@ def _client(
     app.dependency_overrides[dependencies.get_data_gap_service] = lambda: service
     if fetch_job_service is not None:
         app.dependency_overrides[dependencies.get_candle_fetch_job_service] = lambda: fetch_job_service
-    return TestClient(app)
+    return TestClient(app, headers=management_headers())
 
 
 def test_list_data_gaps_api_delegates_filters_to_service(tmp_path, monkeypatch) -> None:

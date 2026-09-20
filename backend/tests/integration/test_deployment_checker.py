@@ -36,6 +36,8 @@ def test_checker_boundaries_and_disposable_requests(base, mode):
         if suffix.startswith("/assets/"):
             return httpx.Response(404 if suffix.endswith("missing.js") else 200,
                                   headers={"content-type": "text/javascript"})
+        if suffix == "/api/v1/auth/session":
+            return httpx.Response(200, json={"login_required": False, "authenticated": True, "username": None})
         if suffix == "/api/v1/health":
             return httpx.Response(200, json={"version": "test-version"})
         if suffix == "/api/v1/health/":

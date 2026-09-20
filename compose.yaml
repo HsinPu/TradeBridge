@@ -32,8 +32,11 @@ services:
       args:
         APP_BASE_PATH: ${APP_BASE_PATH:-/tradebridge}
     restart: unless-stopped
+    environment:
+      LOCAL_PROXY_TOKEN: ${LOCAL_PROXY_TOKEN:?Set LOCAL_PROXY_TOKEN in .env}
     ports:
       - "127.0.0.1:${WEB_PORT:-8080}:8080"
+      - "127.0.0.1:${AUTH_PORT:-8081}:8081"
     depends_on:
       backend:
         condition: service_healthy
