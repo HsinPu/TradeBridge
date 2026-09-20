@@ -32,12 +32,7 @@ def _parse_bool(value: str, default: bool) -> bool:
 class Settings:
     app_name: str = "TradeBridge API"
     app_env: str = "local"
-    admin_username: str = ""
-    admin_password: str = field(default="", repr=False)
-    local_proxy_token: str = field(default="", repr=False)
-    auth_public_origin: str = "http://127.0.0.1:8081"
-    local_ui_origins: list[str] = field(default_factory=lambda: ["http://127.0.0.1:8080", "http://localhost:8080"])
-    app_version: str = "2.0.0"
+    app_version: str = "1.1.1"
     app_base_path: str = "/tradebridge"
     log_level: str = "INFO"
     api_prefix: str = "/api/v1"
@@ -80,12 +75,7 @@ def get_settings() -> Settings:
     return Settings(
         app_name=os.getenv("APP_NAME", "TradeBridge API"),
         app_env=os.getenv("APP_ENV", "local"),
-        admin_username=os.getenv("ADMIN_USERNAME", ""),
-        admin_password=os.getenv("ADMIN_PASSWORD", ""),
-        local_proxy_token=os.getenv("LOCAL_PROXY_TOKEN", ""),
-        auth_public_origin=os.getenv("AUTH_PUBLIC_ORIGIN", "http://127.0.0.1:8081").rstrip("/"),
-        local_ui_origins=[f"http://{host}:{os.getenv('WEB_PORT', '8080')}" for host in ["127.0.0.1", "localhost"]],
-        app_version=os.getenv("APP_VERSION", "2.0.0"),
+        app_version=os.getenv("APP_VERSION", "1.1.1"),
         app_base_path=normalize_app_base_path(os.getenv("APP_BASE_PATH", "/tradebridge")),
         log_level=os.getenv("LOG_LEVEL", "INFO"),
         api_prefix=os.getenv("API_PREFIX", "/api/v1"),

@@ -1,4 +1,3 @@
-from conftest import management_headers
 import httpx
 import pytest
 from fastapi.testclient import TestClient
@@ -93,7 +92,7 @@ def _client(
         app.dependency_overrides[dependencies.get_provider_market_discovery_service] = lambda: discovery_service
     if provider_registry is not None:
         app.dependency_overrides[dependencies.get_market_data_provider_registry] = lambda: provider_registry
-    return TestClient(app, headers=management_headers())
+    return TestClient(app)
 
 
 def test_provider_markets_api_uses_discovery_service(tmp_path, monkeypatch) -> None:

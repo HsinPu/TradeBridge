@@ -6,7 +6,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.router import api_router
-from app.core.auth import AdminAuth, AdminAuthMiddleware
 from app.core.logging import configure_logging
 from app.core.settings import Settings, get_settings
 from app.infrastructure.persistence.sqlite_database import initialize_sqlite_database
@@ -62,8 +61,6 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
     app.state.settings = settings
-    app.state.admin_auth = AdminAuth(settings)
-    app.add_middleware(AdminAuthMiddleware)
 
     @app.exception_handler(JobConflict)
     async def job_conflict_handler(request, exc):
@@ -75,7 +72,7 @@ def create_app() -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=list({*settings.cors_origins, *settings.local_ui_origins, settings.auth_public_origin}),
+        allow_origins=settings.cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

@@ -1,4 +1,3 @@
-from conftest import management_headers
 from fastapi.testclient import TestClient
 
 from app.api.v1 import dependencies
@@ -17,7 +16,7 @@ def _client(tmp_path, monkeypatch) -> TestClient:
     dependencies.get_storage_settings_repository.cache_clear()
     dependencies.get_notification_settings_repository.cache_clear()
     dependencies.get_market_data_provider_registry.cache_clear()
-    return TestClient(create_app(), headers=management_headers())
+    return TestClient(create_app())
 
 
 def test_notification_settings_api_returns_defaults(tmp_path, monkeypatch) -> None:

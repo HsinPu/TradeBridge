@@ -1,4 +1,3 @@
-from conftest import management_headers
 from fastapi.testclient import TestClient
 
 from app.api.v1 import dependencies
@@ -120,7 +119,7 @@ def _client(tmp_path, monkeypatch, service: FakeCandleService) -> TestClient:
     dependencies.get_market_data_provider_registry.cache_clear()
     app = create_app()
     app.dependency_overrides[dependencies.get_candle_service] = lambda: service
-    return TestClient(app, headers=management_headers())
+    return TestClient(app)
 
 
 def _fake_api_key() -> ApiKeyRecord:

@@ -29,19 +29,13 @@ type AppLayoutProps = {
   language: Language;
   onLanguageChange: (language: Language) => void;
   onRouteChange: (route: AppRouteKey) => void;
-  username: string | null;
-  onLogout: () => Promise<void>;
-  logoutBusy: boolean;
 };
 
 export function AppLayout({
   activeRoute,
   language,
   onLanguageChange,
-  onRouteChange,
-  username,
-  onLogout,
-  logoutBusy
+  onRouteChange
 }: AppLayoutProps) {
   const t = messages[language];
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -75,10 +69,6 @@ export function AppLayout({
           </div>
         </div>
         <div className="topbar-actions">
-          {username && <div className="account-actions">
-            <span className="account-name" title={username}>{username}</span>
-            <Button loading={logoutBusy} onClick={() => void onLogout()}>{language === "zh-TW" ? "登出" : "Sign out"}</Button>
-          </div>}
           <Button icon={<QuestionCircleOutlined />} className="topbar-icon-button" aria-label="Help" />
           <Button icon={<BellOutlined />} className="topbar-icon-button" aria-label="Notifications" />
           <Button icon={<ApiOutlined />} className="header-action">

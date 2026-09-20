@@ -1,7 +1,6 @@
 """HTTP smoke check. --disposable writes ONLY against a disposable test DB."""
 
 import argparse
-import os
 import re
 from pathlib import Path
 import tomllib
@@ -22,11 +21,8 @@ def belongs_to_project(path: str, base: str) -> bool:
 
 
 def check_deployment(client: httpx.Client, *, base: str, mode: str,
-                     expected_origin: str, expected_version: str, disposable: bool = False,
-                     auth_mode: str = "local", username: str | None = None, password: str | None = None) -> int:
+                     expected_origin: str, expected_version: str, disposable: bool = False) -> int:
     checks = 0
-    if auth_mode == "anonymous" and disposable:
-        raise ValueError("Anonymous checks cannot use --disposable")
 
     def require(response: httpx.Response, condition: bool, expected: object, actual: object) -> None:
         nonlocal checks
@@ -39,8 +35,6 @@ def check_deployment(client: httpx.Client, *, base: str, mode: str,
         parsed = urlsplit(path)
         if parsed.scheme or parsed.netloc or (mode == "proxy" and not belongs_to_project(parsed.path, base)):
             raise AssertionError(f"Refusing request outside project: {path}")
-        if method not in {"GET", "HEAD", "OPTIONS"}:
-            kwargs["headers"] = {"Origin": expected_origin, "X-TradeBridge-Request": "1", **kwargs.get("headers", {})}
         prepared = client.build_request(method, path, **kwargs)
         if mode == "proxy" and not belongs_to_project(prepared.url.path, base):
             raise AssertionError(f"Refusing normalized request outside project: {prepared.url}")
@@ -68,29 +62,9 @@ def check_deployment(client: httpx.Client, *, base: str, mode: str,
     request(base + "/assets/missing.js", 404)
     response = request(base + "/nested/page")
     equals(response, response.text, html.text)
-    session = request(base + "/api/v1/auth/session")
-    if auth_mode == "local":
-        equals(session, session.json()["login_required"], False)
-        equals(session, session.json()["authenticated"], True)
-    elif auth_mode == "login":
-        if not username or not password:
-            raise ValueError("Set SMOKE_ADMIN_USERNAME and SMOKE_ADMIN_PASSWORD for login checks")
-        request(base + "/api/v1/auth/login", method="POST", json={"username": username, "password": password})
-        session = request(base + "/api/v1/auth/session")
-        equals(session, session.json()["authenticated"], True)
-    elif auth_mode == "session":
-        equals(session, session.json()["authenticated"], True)
-    else:
-        equals(session, session.json()["login_required"], True)
-        equals(session, session.json()["authenticated"], False)
     health = request(base + "/api/v1/health")
     equals(health, health.json()["version"], expected_version)
     request(base + "/api/v1/external/markets", 401)
-    if auth_mode == "anonymous":
-        for path in ["/api/v1/runtime/status", "/api/v1/security/api-keys", "/docs", "/redoc", "/openapi.json"]:
-            response = request(base + path, 401)
-            equals(response, response.json().get("code"), "AUTH_REQUIRED")
-        return checks
     missing = request(base + "/api/v1/no-such-endpoint", 404)
     equals(missing, missing.json().get("detail"), "Not Found")
     for path in ["/docs", "/redoc"]:
@@ -114,9 +88,6 @@ def check_deployment(client: httpx.Client, *, base: str, mode: str,
             request(base + "/api/v1/external/markets", 401, headers=headers)
         finally:
             request(path, 204, "DELETE")
-    if auth_mode == "login":
-        request(base + "/api/v1/auth/logout", 204, "POST")
-        request(base + "/api/v1/runtime/status", 401)
     return checks
 
 
@@ -127,8 +98,6 @@ def main() -> None:
     parser.add_argument("--mode", choices=["direct", "proxy"], default="direct")
     parser.add_argument("--public-origin", help="Expected origin when a test proxy supplies Host/proto")
     parser.add_argument("--disposable", action="store_true")
-    parser.add_argument("--auth", choices=["local", "anonymous", "login"], default="local",
-                        help="local bypass, protected anonymous, or login using SMOKE_ADMIN_* environment")
     args = parser.parse_args()
     for name, value in [("--url", args.url), ("--public-origin", args.public_origin)]:
         if value is not None:
@@ -140,11 +109,10 @@ def main() -> None:
         with httpx.Client(base_url=args.url, follow_redirects=False, timeout=20) as client:
             checks = check_deployment(client, base=args.base_path, mode=args.mode,
                 expected_origin=(args.public_origin or args.url).rstrip("/"),
-                expected_version=project["project"]["version"], disposable=args.disposable, auth_mode=args.auth,
-                username=os.getenv("SMOKE_ADMIN_USERNAME"), password=os.getenv("SMOKE_ADMIN_PASSWORD"))
+                expected_version=project["project"]["version"], disposable=args.disposable)
     except (AssertionError, httpx.HTTPError, ValueError, KeyError) as exc:
-        parser.exit(1, f"Deployment smoke FAILED: mode={args.mode}, auth={args.auth}, base={args.base_path}: {exc}\n")
-    print(f"Deployment smoke passed: {checks} checks, mode={args.mode}, auth={args.auth}, base={args.base_path}, disposable={args.disposable}")
+        parser.exit(1, f"Deployment smoke FAILED: mode={args.mode}, base={args.base_path}: {exc}\n")
+    print(f"Deployment smoke passed: {checks} checks, mode={args.mode}, base={args.base_path}, disposable={args.disposable}")
 
 
 if __name__ == "__main__":

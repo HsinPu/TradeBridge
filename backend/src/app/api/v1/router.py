@@ -1,7 +1,6 @@
 from fastapi import APIRouter
 
 from app.api.v1.routes import (
-    auth,
     candles,
     dashboard,
     data_gaps,
@@ -19,7 +18,6 @@ from app.api.v1.routes import (
 )
 
 api_router = APIRouter()
-api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
 api_router.include_router(health.router, tags=["health"])
 api_router.include_router(markets.router, prefix="/markets", tags=["markets"])
 api_router.include_router(providers.router, prefix="/provider", tags=["provider"])

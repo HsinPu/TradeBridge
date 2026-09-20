@@ -12,10 +12,3 @@ if [ "$APP_BASE_PATH" != "$(cat /etc/nginx/app-base-path)" ]; then
 fi
 # Child exports do not reach the official entrypoint's later envsubst step.
 sed -i "s|\${APP_BASE_PATH}|$APP_BASE_PATH|g" /etc/nginx/templates/default.conf.template
-
-if ! printf '%s' "${LOCAL_PROXY_TOKEN:-}" | grep -Eq '^[A-Za-z0-9_-]{32,}$'; then
-    echo 'Set a random LOCAL_PROXY_TOKEN of at least 32 URL-safe characters.' >&2
-    exit 1
-fi
-sed -i "s|\${APP_BASE_PATH}|$APP_BASE_PATH|g" /etc/nginx/tradebridge-routes.conf
-sed -i "s|\${LOCAL_PROXY_TOKEN}|$LOCAL_PROXY_TOKEN|g" /etc/nginx/templates/default.conf.template /etc/nginx/tradebridge-proxy.conf

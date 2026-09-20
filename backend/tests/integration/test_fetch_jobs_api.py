@@ -1,4 +1,3 @@
-from conftest import management_headers
 from fastapi.testclient import TestClient
 
 from app.api.v1 import dependencies
@@ -142,7 +141,7 @@ def _client(tmp_path, monkeypatch, service: FakeCandleFetchJobService) -> TestCl
     dependencies.get_market_data_provider_registry.cache_clear()
     app = create_app()
     app.dependency_overrides[dependencies.get_candle_fetch_job_service] = lambda: service
-    return TestClient(app, headers=management_headers())
+    return TestClient(app)
 
 
 def test_cancel_fetch_job_api_delegates_to_service(tmp_path, monkeypatch) -> None:

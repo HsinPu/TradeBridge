@@ -1,4 +1,3 @@
-from conftest import management_headers
 from pathlib import Path
 import sqlite3
 
@@ -24,7 +23,7 @@ def _client(tmp_path, monkeypatch) -> TestClient:
     dependencies.get_api_key_repository.cache_clear()
     dependencies.get_database_maintenance_repository.cache_clear()
     dependencies.get_market_data_provider_registry.cache_clear()
-    return TestClient(create_app(), headers=management_headers())
+    return TestClient(create_app())
 
 
 def test_storage_settings_api_returns_runtime_database_path(tmp_path, monkeypatch) -> None:

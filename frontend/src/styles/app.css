@@ -3787,15 +3787,3 @@ select {
     transition-duration: 0.001ms !important;
   }
 }
-.login-shell {
-  min-height: 100dvh;
-  display: grid;
-  place-items: center;
-  padding: 24px 16px;
-  background: #f1f5f9;
-}
-
-.login-card { width: min(100%, 400px); }
-.login-loading { width: 160px; height: 64px; }
-.login-footer, .account-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.account-name { color: #fff; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
