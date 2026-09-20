@@ -1,12 +1,20 @@
 from dataclasses import dataclass, field
 from functools import lru_cache
 import os
+import re
 
 from app.domain.value_objects.provider import DEFAULT_PROVIDER, ProviderName, normalize_provider
 
 
 def _split_csv(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def normalize_app_base_path(value: str) -> str:
+    path = value.rstrip("/")
+    if not re.fullmatch(r"(?:/[A-Za-z0-9_-]+)+", path):
+        raise ValueError("APP_BASE_PATH must be a non-root path such as /tradebridge, using letters, digits, _ or -.")
+    return path
 
 
 def _parse_bool(value: str, default: bool) -> bool:
@@ -24,7 +32,8 @@ def _parse_bool(value: str, default: bool) -> bool:
 class Settings:
     app_name: str = "TradeBridge API"
     app_env: str = "local"
-    app_version: str = "0.1.0"
+    app_version: str = "0.2.0"
+    app_base_path: str = "/tradebridge"
     log_level: str = "INFO"
     api_prefix: str = "/api/v1"
     cors_origins: list[str] = field(
@@ -66,7 +75,8 @@ def get_settings() -> Settings:
     return Settings(
         app_name=os.getenv("APP_NAME", "TradeBridge API"),
         app_env=os.getenv("APP_ENV", "local"),
-        app_version=os.getenv("APP_VERSION", "0.1.0"),
+        app_version=os.getenv("APP_VERSION", "0.2.0"),
+        app_base_path=normalize_app_base_path(os.getenv("APP_BASE_PATH", "/tradebridge")),
         log_level=os.getenv("LOG_LEVEL", "INFO"),
         api_prefix=os.getenv("API_PREFIX", "/api/v1"),
         cors_origins=_split_csv(

@@ -18,6 +18,12 @@ the command above uses uv to load `env.example` explicitly.
 
 ## API
 
+The routes below are internal/legacy paths. The default public prefix is
+`/tradebridge`: use `/tradebridge/api/v1/...` and `/tradebridge/docs`.
+`APP_BASE_PATH` configures FastAPI's `root_path`; `API_PREFIX` remains `/api/v1`.
+The frontend proxy preserves the public path, and FastAPI matches the internal
+route after accounting for the root path. Legacy `/api/v1/...` calls remain valid.
+
 - `GET /api/v1/health`
 - `GET /api/v1/markets/`
 - `GET /api/v1/provider/status`

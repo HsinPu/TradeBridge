@@ -22,6 +22,8 @@
 - `infrastructure/external/`：Binance client、provider registry 與限流；`infrastructure/persistence/`：SQLite Repository、交易與升級；`infrastructure/scheduler/`：排程器與任務執行器。
 - 核心服務透過 ports 使用外部能力，由 `api/v1/dependencies.py` 組裝具體實作。擴充時維持此依賴方向，避免將交易所請求或 SQLite 細節放入領域模型。
 - 部署：Docker Compose 的 Nginx 前端代理 FastAPI，SQLite 存於持久化資料卷。排程器與 worker 仍位於同一後端進程。
+- 自 0.2.0 起整站預設 `/tradebridge/`，公開 API 為 `/tradebridge/api/v1`。以根目錄 `.env` 的 `APP_BASE_PATH` 同步設定前端建置與後端 `root_path`；內部 `API_PREFIX` 維持 `/api/v1`。更改前綴需重建前端，勿在個別 API 呼叫硬編碼專案名稱。
+- 外層反向代理保留專案前綴與公開 Host、覆寫轉送協定標頭。舊 `/api/v1` 仍直接代理相容，不可未經相容性處理就移除；API 未知路徑不可落入前端 HTML fallback。
 
 ## 任務與資料一致性
 
@@ -59,7 +61,7 @@
 
 ## 版本管理規則
 
-依使用者要求記錄：本次先建立規則，自下一批改動起執行。版本格式為 `MAJOR.MINOR.PATCH`（大版.中版.小版），前後端採同一產品版本。
+版本格式為 `MAJOR.MINOR.PATCH`（大版.中版.小版），前後端採同一產品版本。初次建立本指引的 0.1.0 文件提交不升版；後續改動均適用下列規則。
 
 - 每一批完成並交付的儲存庫改動都必須更新版本，包含程式、介面、設定、相依套件、測試與文件；僅閱讀或沒有檔案變更時不升版。
 - 同一批工作包含多個檔案或多次修正，只升版一次；依該批影響最高的等級決定。不要每次存檔升版，也不要為版本號及變更日誌本身的更新遞迴升版。

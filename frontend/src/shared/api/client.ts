@@ -1,6 +1,8 @@
 const DEFAULT_API_BASE_URL = "http://127.0.0.1:8025";
 
-const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? DEFAULT_API_BASE_URL).replace(/\/$/, "");
+// VITE_API_BASE_URL is an origin only; Vite's base owns the deployment path.
+const apiOrigin = (import.meta.env.VITE_API_BASE_URL ?? DEFAULT_API_BASE_URL).replace(/\/+$/, "");
+const apiBaseUrl = `${apiOrigin}${import.meta.env.BASE_URL.replace(/\/+$/, "")}`;
 
 type ApiRequestOptions = {
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";

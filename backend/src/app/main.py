@@ -57,6 +57,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title=settings.app_name,
         version=settings.app_version,
+        root_path=settings.app_base_path,
         lifespan=lifespan,
     )
     app.state.settings = settings
