@@ -19,7 +19,7 @@ services:
     volumes:
       - tradebridge-data:/app/data
     healthcheck:
-      test: ["CMD", "python", "-c", "import json, urllib.request; assert json.load(urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=3))['status'] == 'ok'"]
+      test: ["CMD", "python", "-c", "import json, os, urllib.request; base=os.environ.get('APP_BASE_PATH', '/tradebridge').rstrip('/'); assert json.load(urllib.request.urlopen('http://127.0.0.1:8000'+base+'/api/v1/health', timeout=3))['status'] == 'ok'"]
       interval: 10s
       timeout: 5s
       retries: 5

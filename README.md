@@ -19,7 +19,7 @@ docker compose up --build -d --wait
 
 前端由 Nginx 提供，整站位於 `/tradebridge/`，包含靜態資源、API 與文件；瀏覽器使用同一個網址，無需額外設定 API 位址或 CORS。後端不對主機發布連接埠。管理 API 沒有完整登入保護，因此預設只綁定 `127.0.0.1`，適合本機使用；外部唯讀 API 的 API Key 不等於管理介面的存取保護。
 
-舊首頁 `/` 導向 `/tradebridge/`；舊 `/docs`、`/redoc`、`/openapi.json` 導向帶前綴的入口。舊 `/api/v1/...` 保留直接代理相容性，POST/PATCH 不經重新導向。
+自 1.0.0 起只公開專案路徑下的入口。直接連接 TradeBridge 時，未加前綴的 `/`、`/api/v1/...`、`/docs`、`/redoc`、`/openapi.json` 回傳 404，不再提供相容代理或轉址。
 
 ## 常用操作
 
@@ -60,7 +60,7 @@ LOG_LEVEL=DEBUG
 
 ```nginx
 location = /tradebridge {
-    return 308 /tradebridge/;
+    return 308 /tradebridge/$is_args$args;
 }
 location /tradebridge/ {
     # 不加尾端斜線：保留 /tradebridge/，不要在外層移除前綴。
@@ -90,6 +90,17 @@ uv run --env-file env.example uvicorn app.main:app --host 127.0.0.1 --port 8025 
 
 更多後端 API 說明見 [backend/README.md](backend/README.md)。
 
-部署後可執行 `uv run python scripts/check_deployment.py`，唯讀檢查新舊 API、靜態資源、文件、重新導向與版本。自訂前綴可加 `--base-path /tools/market-data`，自訂位址可加 `--url http://127.0.0.1:8088`。`--disposable` 會建立、停用並撤銷測試 API Key，僅供獨立暫存資料庫使用，不要對既有資料環境加此選項。
+部署檢查預設唯讀，`--url` 只填來源網址（協定、主機及選用連接埠），不含專案路徑：
+
+```sh
+# 直接連接 TradeBridge；額外確認專案外的舊入口回傳 404。
+uv run python scripts/check_deployment.py --mode direct --url http://127.0.0.1:8080
+# 共用網域；只請求 /tradebridge 範圍，不接觸其他服務的 / 或 /api/。
+uv run python scripts/check_deployment.py --mode proxy --url https://example.com --base-path /tradebridge
+```
+
+自訂前綴加 `--base-path /tools/market-data`。`--public-origin` 可指定測試代理提供的公開來源。`--disposable` 會透過帶前綴的 API 建立、停用並刪除測試 API Key，僅供獨立暫存資料庫使用，不要對既有資料環境加此選項。當專案前綴本身是 `/api` 或 `/redoc`，檢查依實際專案邊界判斷，不將該範圍誤當作舊入口。
+
+可執行 `uv run python scripts/verify_deployment_matrix.py` 重現隔離 Docker 部署矩陣；需要 Docker、建置所需網路及 httpx，使用暫存容器與資料庫，完成後清理測試資源，不連接現有資料卷。
 
 任務狀態、API 變更、資料庫升級與回復步驟見 [任務可靠性說明](docs/decisions/task-reliability.md)。

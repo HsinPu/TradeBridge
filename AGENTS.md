@@ -23,7 +23,7 @@
 - 核心服務透過 ports 使用外部能力，由 `api/v1/dependencies.py` 組裝具體實作。擴充時維持此依賴方向，避免將交易所請求或 SQLite 細節放入領域模型。
 - 部署：Docker Compose 的 Nginx 前端代理 FastAPI，SQLite 存於持久化資料卷。排程器與 worker 仍位於同一後端進程。
 - 自 0.2.0 起整站預設 `/tradebridge/`，公開 API 為 `/tradebridge/api/v1`。以根目錄 `.env` 的 `APP_BASE_PATH` 同步設定前端建置與後端 `root_path`；內部 `API_PREFIX` 維持 `/api/v1`。更改前綴需重建前端，勿在個別 API 呼叫硬編碼專案名稱。
-- 外層反向代理保留專案前綴與公開 Host、覆寫轉送協定標頭。舊 `/api/v1` 仍直接代理相容，不可未經相容性處理就移除；API 未知路徑不可落入前端 HTML fallback。
+- 外層反向代理保留專案前綴與公開 Host、覆寫轉送協定標頭。自 1.0.0 起公開入口僅限 `APP_BASE_PATH` 範圍，移除舊 API 代理、舊文件轉址及根目錄轉址。後端內部路由維持 `/api/v1`，健康檢查帶上專案前綴以支援 `/api` 等名稱。API 未知路徑不可落入前端 HTML fallback。共用網域使用部署檢查的 `--mode proxy`，不得請求專案外的其他服務。
 
 ## 任務與資料一致性
 

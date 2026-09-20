@@ -10,7 +10,7 @@ from app.infrastructure.persistence.sqlite_market_repository import SQLiteMarket
 from app.main import create_app
 
 
-@pytest.fixture(params=["/tradebridge", "/tools/market-data/"])
+@pytest.fixture(params=["/tradebridge", "/tools/market-data/", "/docs/project", "/api", "/redoc"])
 def deployment_client(request, tmp_path, monkeypatch):
     monkeypatch.setenv("APP_BASE_PATH", request.param)
     monkeypatch.setenv("API_PREFIX", "/api/v1")
@@ -31,22 +31,21 @@ def deployment_client(request, tmp_path, monkeypatch):
         get_settings.cache_clear()
 
 
-def test_new_and_legacy_paths_preserve_requests_and_auth(deployment_client):
+def test_public_paths_preserve_requests_and_auth(deployment_client):
     client, base = deployment_client
-    for prefix in [base, ""]:
-        assert client.get(f"{prefix}/api/v1/health").status_code == 200
-        assert client.get(f"{prefix}/api/v1/external/markets").status_code == 401
-        created = client.post(f"{prefix}/api/v1/security/api-keys", json={"name": "prefix-test"})
-        assert created.status_code == 201
-        payload = created.json()
-        key_id = payload["record"]["id"]
-        headers = {"X-API-Key": payload["api_key"]}
-        assert client.get(f"{base}/api/v1/external/markets", headers=headers).status_code == 200
-        changed = client.patch(f"{prefix}/api/v1/security/api-keys/{key_id}", json={"enabled": False})
-        assert changed.status_code == 200
-        assert changed.json()["enabled"] is False
-        assert client.get(f"{base}/api/v1/external/markets", headers=headers).status_code == 401
-        assert client.delete(f"{prefix}/api/v1/security/api-keys/{key_id}").status_code == 204
+    assert client.get(f"{base}/api/v1/health").status_code == 200
+    assert client.get(f"{base}/api/v1/external/markets").status_code == 401
+    created = client.post(f"{base}/api/v1/security/api-keys", json={"name": "prefix-test"})
+    assert created.status_code == 201
+    payload = created.json()
+    key_id = payload["record"]["id"]
+    headers = {"X-API-Key": payload["api_key"]}
+    assert client.get(f"{base}/api/v1/external/markets", headers=headers).status_code == 200
+    changed = client.patch(f"{base}/api/v1/security/api-keys/{key_id}", json={"enabled": False})
+    assert changed.status_code == 200
+    assert changed.json()["enabled"] is False
+    assert client.get(f"{base}/api/v1/external/markets", headers=headers).status_code == 401
+    assert client.delete(f"{base}/api/v1/security/api-keys/{key_id}").status_code == 204
 
 
 def test_docs_schema_and_missing_api_paths(deployment_client):
