@@ -1,3 +1,4 @@
+import { MinuteDataPage } from "../features/collection/MinuteDataPage";
 import {
   CheckCircleOutlined,
   CloseOutlined,
@@ -856,6 +857,18 @@ function getProgressStatusFromJob(status: CandleFetchJobResponse["status"]): Fet
 }
 
 export function DataPage({ messages }: DataPageProps) {
+  const [source, setSource] = useState("minute");
+  const english = messages.data.title === "Market Data";
+  return <div className="page-stack">
+    <Segmented aria-label={english ? "Data source" : "資料來源模式"} value={source} onChange={value => setSource(String(value))} options={[
+      { value: "minute", label: english ? "Derived from 1-minute data" : "1 分鐘資料彙整" },
+      { value: "legacy", label: english ? "Original interval data" : "原始週期資料" }
+    ]} />
+    {source === "minute" ? <MinuteDataPage english={english} /> : <RawDataPage messages={messages} />}
+  </div>;
+}
+
+function RawDataPage({ messages }: DataPageProps) {
   const storedPreferences = useMemo(() => getStoredDataPagePreferences(), []);
   const hasLoadedPrimaryRef = useRef(false);
   const chartCacheRef = useRef(new Map<string, ChartCacheEntry>());

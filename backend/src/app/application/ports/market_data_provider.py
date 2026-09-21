@@ -2,10 +2,14 @@ from typing import Protocol
 
 from app.application.models.candle_query import CandleAvailabilityQuery, CandleBatchQuery
 from app.application.models.provider_market import ProviderMarket
+from app.application.models.market_catalog import CatalogSnapshot
 from app.domain.entities.candle import Candle
 
 
 class MarketDataProvider(Protocol):
+    def market_catalog(self) -> CatalogSnapshot:
+        ...
+
     def ping(self) -> bool:
         ...
 

@@ -9,9 +9,18 @@ from app.infrastructure.persistence.sqlite_notification_settings_repository impo
 from app.infrastructure.persistence.sqlite_provider_data_source_repository import SQLiteProviderDataSourceRepository
 from app.infrastructure.persistence.sqlite_schedule_repository import SQLiteScheduleRepository
 from app.infrastructure.persistence.sqlite_storage_settings_repository import SQLiteStorageSettingsRepository
+from app.infrastructure.persistence.collection_migrations import migrate_collection
+from app.infrastructure.persistence.collection_migrations import SCHEMA_VERSION
+from app.infrastructure.persistence.sqlite_connection import connect_sqlite
 
 
 def initialize_sqlite_database(database_path: str) -> None:
+    from pathlib import Path
+    if database_path != ":memory:" and Path(database_path).exists():
+        with connect_sqlite(database_path) as db:
+            if db.execute("SELECT 1 FROM sqlite_master WHERE name='schema_migrations'").fetchone():
+                if db.execute("SELECT 1 FROM schema_migrations WHERE version>?", (SCHEMA_VERSION,)).fetchone():
+                    raise RuntimeError("Database schema is newer than this application")
     optimize_sqlite_database(database_path)
     SQLiteCandleRepository(database_path).initialize()
     SQLiteDataGapRepository(database_path).initialize()
@@ -23,4 +32,5 @@ def initialize_sqlite_database(database_path: str) -> None:
     SQLiteNotificationSettingsRepository(database_path).initialize()
     SQLiteInterfacePreferencesRepository(database_path).initialize()
     SQLiteApiKeyRepository(database_path).initialize()
+    migrate_collection(database_path)
     optimize_sqlite_database(database_path)

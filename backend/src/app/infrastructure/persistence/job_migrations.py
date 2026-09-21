@@ -1,11 +1,12 @@
 """Additive, versioned job schema upgrades. Run before starting workers."""
 from app.infrastructure.persistence.sqlite_connection import sqlite_transaction
+from app.infrastructure.persistence.collection_migrations import SCHEMA_VERSION
 
 
 def migrate_jobs(database_path: str) -> None:
     with sqlite_transaction(database_path) as db:
         db.execute("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)")
-        if db.execute("SELECT 1 FROM schema_migrations WHERE version>1").fetchone():
+        if db.execute("SELECT 1 FROM schema_migrations WHERE version>?", (SCHEMA_VERSION,)).fetchone():
             raise RuntimeError("Database schema is newer than this application")
         if db.execute("SELECT 1 FROM schema_migrations WHERE version=1").fetchone():
             return

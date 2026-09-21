@@ -6,6 +6,7 @@ from app.application.services.execution_control import check_execution
 from datetime import datetime, timedelta, timezone, tzinfo
 from time import perf_counter
 from uuid import uuid4
+from typing import Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.application.models.candle_query import CandleAvailabilityQuery, CandleBatchQuery, CandleFetchQuery
@@ -23,6 +24,7 @@ from app.application.ports.data_gap_repository import DataGapRepository
 from app.application.ports.fetch_job_repository import FetchJobRepository
 from app.application.ports.market_data_provider import MarketDataProvider, MarketDataProviderResolver
 from app.application.services.candle_fetch_planner import datetime_to_ms, ms_to_iso
+from app.application.services.candle_continuity import missing_open_ranges, repository_open_times
 from app.domain.entities.candle import Candle
 from app.domain.value_objects.candle_interval import CandleInterval
 from app.domain.value_objects.market_pair import MarketPair
@@ -65,12 +67,14 @@ class CandleFetchJobService:
         provider_resolver: MarketDataProviderResolver,
         data_gap_repository: DataGapRepository | None = None,
         execution_store: JobExecutionStore | None = None,
+        historical_provider_factory: Callable[[str], MarketDataProvider] | None = None,
     ) -> None:
         self._candle_repository = candle_repository
         self._fetch_job_repository = fetch_job_repository
         self._provider_resolver = provider_resolver
         self._data_gap_repository = data_gap_repository
         self._execution_store = execution_store
+        self._historical_provider_factory = historical_provider_factory
 
     def _plan_query(self, query, *, now=None):
         coverage = self._candle_repository.coverage(provider=query.provider, market_pair=query.market_pair, interval=query.interval)
@@ -94,6 +98,17 @@ class CandleFetchJobService:
             ))
             self._execution_store.save_request(job.id, {**asdict(query), "planned_at": now.isoformat()})
             return job
+
+    def create_archive_reimport_job(self, *, market_pair: str, start_ms: int, end_ms: int):
+        if start_ms < 0 or start_ms % 60000 or end_ms % 60000 or not 0 < end_ms - start_ms <= 44640 * 60000:
+            raise ValueError("Reimport requires aligned minutes and a range of at most 31 days")
+        if end_ms > int(datetime.now(timezone.utc).timestamp() * 1000) // 60000 * 60000:
+            raise ValueError("Reimport only accepts closed minutes")
+        return self.create_fetch_job(CandleFetchJobCreateCommand(provider="binance", market_type="spot",
+            market_pair=market_pair, interval="1m", start_time=_datetime_from_ms(start_ms),
+            end_time=_datetime_from_ms(end_ms - 1), mode="overwrite_range", closed_only=True,
+            batch_limit=1000, overlap_candles=0, verify_continuity=True, retry_attempts=3,
+            retry_delay_seconds=1, trigger_type="archive_reimport"))
 
     def _prepare_query(self, job):
         if not self._execution_store or self._execution_store.load_plan(job.id):
@@ -602,6 +617,8 @@ class CandleFetchJobService:
     def _run_manual_backfill(self, job: CandleFetchJob) -> CandleFetchJob:
         interval = CandleInterval.parse(job.interval)
         provider = self._provider_resolver.get(job.provider)
+        if job.trigger_type in {"collection_history", "archive_reimport"} and self._historical_provider_factory:
+            provider = self._historical_provider_factory(job.provider)
         effective_end_open_time_ms = interval.floor_open_time_ms(job.effective_end_time_ms)
         controlled_job = self._get_controlled_job(job.id)
         if controlled_job is not None:
@@ -1344,60 +1361,11 @@ def _find_repository_missing_ranges(
     interval_ms: int,
     excluded_ranges: list[OpenTimeRange] | None = None,
 ) -> list[OpenTimeRange]:
-    actual_open_times = set(
-        repository.list_open_time_ms(
-            provider=provider,
-            market_pair=market_pair,
-            interval=interval,
-            start_time_ms=start_open_time_ms,
-            end_time_ms=end_open_time_ms,
-        )
-    )
-    merged_excluded_ranges = _merge_open_time_ranges(
-        ranges=excluded_ranges or [],
-        interval_ms=interval_ms,
-    )
-    excluded_index = 0
-
-    missing_ranges: list[OpenTimeRange] = []
-    current_start: int | None = None
-    current_end: int | None = None
-    expected_open_time_ms = start_open_time_ms
-    while expected_open_time_ms <= end_open_time_ms:
-        while (
-            excluded_index < len(merged_excluded_ranges)
-            and merged_excluded_ranges[excluded_index].end_open_time_ms < expected_open_time_ms
-        ):
-            excluded_index += 1
-        is_provider_unavailable = (
-            excluded_index < len(merged_excluded_ranges)
-            and merged_excluded_ranges[excluded_index].start_open_time_ms <= expected_open_time_ms
-            and expected_open_time_ms <= merged_excluded_ranges[excluded_index].end_open_time_ms
-        )
-        if not is_provider_unavailable and expected_open_time_ms not in actual_open_times:
-            if current_start is None:
-                current_start = expected_open_time_ms
-            current_end = expected_open_time_ms
-        elif current_start is not None and current_end is not None:
-            missing_ranges.append(
-                OpenTimeRange(
-                    start_open_time_ms=current_start,
-                    end_open_time_ms=current_end,
-                )
-            )
-            current_start = None
-            current_end = None
-        expected_open_time_ms += interval_ms
-
-    if current_start is not None and current_end is not None:
-        missing_ranges.append(
-            OpenTimeRange(
-                start_open_time_ms=current_start,
-                end_open_time_ms=current_end,
-            )
-        )
-
-    return missing_ranges
+    actual = repository_open_times(repository, provider=provider, market_pair=market_pair, interval=interval,
+        start_time_ms=start_open_time_ms, end_time_ms=end_open_time_ms)
+    return [OpenTimeRange(start, end) for start, end in missing_open_ranges(actual,
+        start=start_open_time_ms, end=end_open_time_ms, step=interval_ms,
+        excluded=((item.start_open_time_ms, item.end_open_time_ms) for item in excluded_ranges or []))]
 
 
 def _expand_ranges_with_overlap(
@@ -1504,42 +1472,15 @@ def _count_repository_missing_candles(
     interval_ms: int,
     excluded_ranges: list[OpenTimeRange] | None = None,
 ) -> tuple[int, int | None]:
-    actual_open_times = set(
-        repository.list_open_time_ms(
-            provider=provider,
-            market_pair=market_pair,
-            interval=interval,
-            start_time_ms=start_open_time_ms,
-            end_time_ms=end_open_time_ms,
-        )
-    )
-    merged_excluded_ranges = _merge_open_time_ranges(
-        ranges=excluded_ranges or [],
-        interval_ms=interval_ms,
-    )
-    excluded_index = 0
-
-    missing_count = 0
-    first_missing_open_time_ms: int | None = None
-    expected_open_time_ms = start_open_time_ms
-    while expected_open_time_ms <= end_open_time_ms:
-        while (
-            excluded_index < len(merged_excluded_ranges)
-            and merged_excluded_ranges[excluded_index].end_open_time_ms < expected_open_time_ms
-        ):
-            excluded_index += 1
-        is_provider_unavailable = (
-            excluded_index < len(merged_excluded_ranges)
-            and merged_excluded_ranges[excluded_index].start_open_time_ms <= expected_open_time_ms
-            and expected_open_time_ms <= merged_excluded_ranges[excluded_index].end_open_time_ms
-        )
-        if not is_provider_unavailable and expected_open_time_ms not in actual_open_times:
-            missing_count += 1
-            if first_missing_open_time_ms is None:
-                first_missing_open_time_ms = expected_open_time_ms
-        expected_open_time_ms += interval_ms
-
-    return missing_count, first_missing_open_time_ms
+    actual = repository_open_times(repository, provider=provider, market_pair=market_pair, interval=interval,
+        start_time_ms=start_open_time_ms, end_time_ms=end_open_time_ms)
+    count, first = 0, None
+    for start, end in missing_open_ranges(actual, start=start_open_time_ms, end=end_open_time_ms,
+            step=interval_ms, excluded=((item.start_open_time_ms, item.end_open_time_ms) for item in excluded_ranges or [])):
+        count += (end - start) // interval_ms + 1
+        if first is None:
+            first = start
+    return count, first
 
 
 def _utcnow_iso() -> str:

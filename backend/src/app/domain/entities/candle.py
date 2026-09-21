@@ -23,3 +23,6 @@ class Candle:
     taker_buy_quote_volume: str
     unused_value: str
     raw_payload_json: str
+    source_uri: str | None = None
+    source_sha256: str | None = None
+    source_timestamp_unit: str = "ms"

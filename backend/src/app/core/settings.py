@@ -32,7 +32,7 @@ def _parse_bool(value: str, default: bool) -> bool:
 class Settings:
     app_name: str = "TradeBridge API"
     app_env: str = "local"
-    app_version: str = "1.1.1"
+    app_version: str = "1.2.0"
     app_base_path: str = "/tradebridge"
     log_level: str = "INFO"
     api_prefix: str = "/api/v1"
@@ -75,7 +75,7 @@ def get_settings() -> Settings:
     return Settings(
         app_name=os.getenv("APP_NAME", "TradeBridge API"),
         app_env=os.getenv("APP_ENV", "local"),
-        app_version=os.getenv("APP_VERSION", "1.1.1"),
+        app_version=os.getenv("APP_VERSION", "1.2.0"),
         app_base_path=normalize_app_base_path(os.getenv("APP_BASE_PATH", "/tradebridge")),
         log_level=os.getenv("LOG_LEVEL", "INFO"),
         api_prefix=os.getenv("API_PREFIX", "/api/v1"),

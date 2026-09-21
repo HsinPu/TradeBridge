@@ -178,3 +178,14 @@ K 線保留 OHLC、成交量、交易筆數、時間與原始供應商 payload�
 - [外部唯讀 API](../backend/src/app/api/v1/routes/external.py)：對外資料契約與 API Key 驗證。
 - [通知 API](../backend/src/app/api/v1/routes/notifications.py)：目前通知設定功能的範圍。
 - [前端版面入口](../frontend/src/app/layout/AppLayout.tsx)：主要頁面及頂部狀態呈現。
+
+
+## 1.2.0 分鐘資料擴充（2026-09-21）
+
+維持模組化單體、單一後端進程及兩個市場 worker。新增 CatalogRunner 執行持久化目錄同步，CollectionRunner 只協調有限區段並建立既有 JobRunner 任務；SQL 寫入仍受 execution token、維護鎖及批次交易保護。政策預設關閉。
+
+歷史 provider adapter 讀取官方月／日檔，驗 SHA256、格式、時間單位及範圍，找不到檔案時使用既有 REST provider。原始 payload、來源 manifest 與修訂紀錄保留在 SQLite。所有自動下載都是 Binance 現貨 1m。
+
+CandleSeriesService 與獨立 repository 以一致性快照、Decimal 與 UTC 日曆邊界提供可分頁衍生序列；來源修訂使有限快取失效，發布時再次比對修訂。新介面預設讀取這個契約，舊原生端點及頁面入口保留。Dashboard 預設讀小型收集 metadata，不做全歷史 candles COUNT。
+
+完整政策、表格、查詢契約與容量限制見 [交付紀錄](plans/minute-data-implementation.md)。現有單 SQLite 的全市場多年效能仍須依實際市場及儲存環境評估，不能把樣本量測當作生產吞吐保證。

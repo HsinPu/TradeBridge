@@ -22,6 +22,9 @@ from app.schemas.responses.markets import MarketResponse, MarketsResponse
 
 router = APIRouter()
 
+from app.api.v1.routes.candle_series import router as candle_series_router
+router.include_router(candle_series_router, prefix="/candle-series", dependencies=[Depends(require_market_data_read_api_key)])
+
 
 @router.get("/markets", response_model=MarketsResponse)
 def list_external_markets(

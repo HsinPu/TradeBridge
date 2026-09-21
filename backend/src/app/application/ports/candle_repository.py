@@ -1,10 +1,14 @@
 from typing import Protocol
+from collections.abc import Iterator
 
 from app.application.models.candle_query import CandleListItem
 from app.domain.entities.candle import Candle
 
 
 class CandleRepository(Protocol):
+    def iter_open_time_ms(self, *, provider: str, market_pair: str, interval: str,
+                          start_time_ms: int, end_time_ms: int) -> Iterator[int]: ...
+
     def initialize(self) -> None:
         ...
 

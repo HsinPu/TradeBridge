@@ -1,5 +1,6 @@
 import { RightOutlined } from "@ant-design/icons";
-import { Alert, Badge, Button, Card, Col, Row, Space, Table, Tag, Typography } from "antd";
+import { CollectionPanel } from "../features/collection/CollectionPanel";
+import { Alert, Badge, Button, Card, Col, Row, Segmented, Space, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useEffect, useMemo, useState } from "react";
 
@@ -9,10 +10,12 @@ import { SummaryCard } from "../features/market-data/components/SummaryCard";
 import {
   DEFAULT_MARKET_DATA_PROVIDER,
   getDashboardOverview,
+  getCandleFetchJobOverview,
   MARKET_DATA_PROVIDER_LABELS
 } from "../features/market-data/api";
 import type {
   CandleFetchJobResponse,
+  CandleFetchJobOverviewResponse,
   DashboardCoverageItemResponse,
   DashboardMetricsResponse,
   DashboardOverviewResponse,
@@ -32,7 +35,7 @@ function getDashboardSnapshots(
   overview: DashboardOverviewResponse | null
 ): PriceSnapshot[] {
   const metrics = overview?.metrics;
-  const providerHealthy = overview?.provider_status.healthy ?? true;
+  const providerHealthy = overview?.provider_status.healthy ?? false;
   const hasLatestSync = Boolean(metrics?.latest_sync_at);
   const hasLatestCandle = Boolean(metrics?.latest_candle_time);
   return [
@@ -41,7 +44,7 @@ function getDashboardSnapshots(
       value: metrics ? formatInteger(metrics.tracked_market_count) : "--",
       detail: formatMarketDetail(overview?.coverage) ?? messages.dashboard.kpis.trackedSymbols.detail,
       trend: `+${metrics?.tracked_market_count ?? 0}`,
-      sparkline: [24, 28, 24, 31, 35, 30, 42, 48],
+      sparkline: [],
       tone: "success"
     },
     {
@@ -51,7 +54,7 @@ function getDashboardSnapshots(
         ? formatDateTime(metrics?.latest_candle_time) ?? messages.dashboard.kpis.storedCandles.detail
         : messages.common.noData,
       trend: overview?.interval ?? DEFAULT_DASHBOARD_INTERVAL,
-      sparkline: [32, 34, 41, 35, 45, 48, 42, 58],
+      sparkline: [],
       tone: hasLatestCandle ? "success" : "neutral"
     },
     {
@@ -63,7 +66,7 @@ function getDashboardSnapshots(
       trend: hasLatestSync
         ? providerHealthy ? messages.common.success : messages.common.warning
         : messages.common.noData,
-      sparkline: [22, 43, 27, 31, 24, 44, 38, 51],
+      sparkline: [],
       tone: hasLatestSync ? providerHealthy ? "success" : "warning" : "neutral"
     },
     {
@@ -73,7 +76,7 @@ function getDashboardSnapshots(
         : formatInteger(metrics.data_gap_count),
       detail: formatDataGapDetail(metrics, messages),
       trend: formatDataGapTrend(metrics, messages),
-      sparkline: [20, 24, 28, 22, 21, 26, 33, 42],
+      sparkline: [],
       tone: resolveDataGapTone(metrics)
     }
   ];
@@ -124,7 +127,7 @@ function getActivityColumns(messages: AppMessages): ColumnsType<SyncActivity> {
   ];
 }
 
-export function DashboardPage({ messages }: DashboardPageProps) {
+function NativeDashboard({ messages }: DashboardPageProps) {
   const [coverageInterval, setCoverageInterval] = useState(DEFAULT_DASHBOARD_INTERVAL);
   const [dashboardOverview, setDashboardOverview] = useState<DashboardOverviewResponse | null>(null);
   const [isDashboardLoading, setIsDashboardLoading] = useState(false);
@@ -495,4 +498,44 @@ function maxNumber(values: Array<number | null>) {
 
 function getProviderLabel(provider: string) {
   return MARKET_DATA_PROVIDER_LABELS[provider as MarketDataProviderName] ?? provider;
+}
+
+export function DashboardPage({ messages }: DashboardPageProps) {
+  const english = messages.data.title === "Market Data";
+  const [view, setView] = useState("collection");
+  return <div className="page-stack">
+    <Segmented aria-label={english ? "Overview mode" : "總覽模式"} value={view} onChange={setView} options={[
+      { value: "collection", label: english ? "Collection overview" : "全市場收集總覽" },
+      { value: "native", label: english ? "Legacy native data overview" : "原生週期資料總覽" }
+    ]} />
+    {view === "native" ? <NativeDashboard messages={messages} /> : <CollectionOverview messages={messages} />}
+  </div>;
+}
+
+function CollectionOverview({ messages }: DashboardPageProps) {
+  const english = messages.data.title === "Market Data";
+  const [overview, setOverview] = useState<CandleFetchJobOverviewResponse | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let active = true;
+    let loading = false;
+    async function load() {
+      if (loading) return;
+      loading = true;
+      try { const next = await getCandleFetchJobOverview({ recent_limit: 8 }); if (active) { setOverview(next); setFailed(false); } }
+      catch { if (active) setFailed(true); }
+      finally { loading = false; }
+    }
+    void load(); const id = window.setInterval(() => void load(), 8000);
+    return () => { active = false; window.clearInterval(id); };
+  }, []);
+  return <main className="page-stack">
+    <div className="page-header"><Typography.Title level={2}>{messages.dashboard.title}</Typography.Title></div>
+    <CollectionPanel compact language={english ? "en-US" : "zh-TW"} />
+    {failed && <Alert type="error" message={english ? "Job status could not be refreshed" : "任務狀態更新失敗"} />}
+    <Card title={messages.dashboard.recentSyncActivity} className="panel-card" variant="borderless">
+      <Table columns={getActivityColumns(messages)} dataSource={mapRecentJobs(overview?.recent_jobs ?? [])}
+        loading={!overview && !failed} pagination={false} scroll={{ x: 720 }} />
+    </Card>
+  </main>;
 }

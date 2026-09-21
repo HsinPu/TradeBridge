@@ -145,3 +145,18 @@ npm --prefix frontend run build
 `test_job_reliability.py` uses temporary SQLite files, controlled clocks, barriers,
 and subprocess exits after HTTP, before commit and after commit, across backfill,
 gap repair and delete/reload. No real exchange or existing database is required.
+
+
+## Minute collection extension — schema 2 / product 1.2.0
+
+Catalog sync has durable requests, a fenced lease and atomic snapshot publication. A failed or suspiciously shrunken snapshot cannot disable markets. Exchange status, observation and user-enabled intent are independent.
+
+The collection coordinator admits finite 10,000-minute jobs with a bounded pending queue. Weighted claims rotate manual/recent/manual/history while retaining same-market exclusion. Policy/market gates run at claim and before each write. Held work does not consume the active queue budget; explicit user pauses and cancellations remain authoritative. Retry attempts retain their original job IDs in `collection_attempts` even if terminal job history is cleared.
+
+Historical scan progress may pass a documented incomplete segment. The separate recent continuous watermark cannot pass a gap. Previously incomplete segments are rechecked in bounded batches after minute revisions change, including manual repairs.
+
+Archive manifests, candle revisions, minute cache invalidation and candles are committed in the existing batch transaction together with job checkpoints/receipts. Explicit archive reimports use bounded overwrite jobs, retain changed old/new payloads, and invalidate derived cache. Neither import nor collection bypasses JobRunner.
+
+Schema 2 is additive: catalog/policy/segments/attempts/revisions/cache plus a nullable candle source reference and source/audit side tables. Startup rejects future schemas before initialization and starts background services only after initialization succeeds. Collection stays disabled on upgrade; existing paused jobs, schedules, market preferences and original payloads survive. Upgrade initialization can scan the existing 1m symbol index once to seed revisions; it does not rewrite historical payloads.
+
+Rollback requires the pre-upgrade SQLite backup and matching old application; a code-only revert cannot read schema 2. `python scripts/verify_minute_upgrade.py --baseline ab34599` builds an isolated schema-1 fixture using the actual baseline Git source, checks upgrade/repeat startup, and restores its backup under the original application. It never opens the production volume. See [implementation evidence](../plans/minute-data-implementation.md).

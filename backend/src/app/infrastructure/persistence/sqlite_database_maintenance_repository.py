@@ -9,8 +9,18 @@ ACTIVE_FETCH_JOB_STATUSES = ("pending", "running", "pausing", "paused", "cancell
 MARKET_DATA_TABLES = ("candles", "data_gaps")
 JOB_HISTORY_TABLES = ("fetch_jobs",)
 RESET_ALL_TABLES = (
+    "collection_attempts",
+    "collection_segments",
+    "collection_states",
+    "collection_schedule_changes",
+    "candle_series_cache",
+    "market_catalog",
+    "catalog_sync_requests",
+    "catalog_sync_runs",
     "schedule_triggers",
     "candles",
+    "candle_revisions",
+    "candle_sources",
     "data_gaps",
     "fetch_jobs",
     "schedules",
@@ -40,7 +50,14 @@ class SQLiteDatabaseMaintenanceRepository:
                 """,
                 ACTIVE_FETCH_JOB_STATUSES,
             ).fetchone()
-        return int(row["active_count"]) if row else 0
+            catalog_count = 0
+            if self._table_exists("catalog_sync_runs", connection=connection):
+                catalog_count = connection.execute(
+                    "SELECT COUNT(*) FROM catalog_sync_runs WHERE status IN ('pending','running')"
+                ).fetchone()[0]
+            if self._table_exists("collection_policy", connection=connection):
+                catalog_count += connection.execute("SELECT enabled FROM collection_policy WHERE id=1").fetchone()[0]
+        return (int(row["active_count"]) if row else 0) + catalog_count
 
     def create_backup(self) -> str | None:
         if self._database_path == ":memory:":
@@ -61,6 +78,10 @@ class SQLiteDatabaseMaintenanceRepository:
         return self._delete_tables(MARKET_DATA_TABLES)
 
     def reset_job_history(self) -> dict[str, int]:
+        # Finish bookkeeping while terminal parent jobs still exist. The caller
+        # already holds the maintenance lock and has excluded active jobs.
+        from app.infrastructure.persistence.sqlite_collection_repository import SQLiteCollectionRepository
+        SQLiteCollectionRepository(self._database_path).reconcile(int(datetime.now(timezone.utc).timestamp() * 1000))
         return self._delete_tables(JOB_HISTORY_TABLES)
 
     def reset_all(self) -> dict[str, int]:
@@ -83,6 +104,21 @@ class SQLiteDatabaseMaintenanceRepository:
             }
             for table_name in table_names:
                 connection.execute(f"DELETE FROM {table_name}")
+            if "candles" in table_names:
+                connection.execute("DELETE FROM candle_series_cache")
+                # Never recycle revision numbers: in-flight readers may still try
+                # to publish a cache from before the reset.
+                connection.execute("UPDATE minute_revisions SET revision=revision+1")
+                connection.execute("DELETE FROM candle_sources")
+                connection.execute("DELETE FROM candle_revisions")
+                connection.execute("DELETE FROM collection_segments")
+                connection.execute("""UPDATE collection_states SET first_open_time_ms=NULL,history_next_ms=NULL,
+                    history_end_ms=NULL,tail_next_ms=NULL,tail_complete_until_ms=NULL,discovery_attempts=0,next_discovery_ms=0,
+                    last_planned_ms=0,last_error=NULL""")
+                connection.execute("UPDATE collection_policy SET enabled=0,revision=revision+1,blocked_reason=NULL")
+            if table_names == RESET_ALL_TABLES:
+                connection.execute("DELETE FROM collection_policy")
+                connection.execute("INSERT INTO collection_policy(id) VALUES (1)")
             self._reset_sequences(connection=connection, table_names=table_names)
         self._vacuum()
         return deleted_counts

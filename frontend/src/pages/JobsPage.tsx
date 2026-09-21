@@ -38,6 +38,7 @@ import {
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs, { type Dayjs } from "dayjs";
+import { CollectionPanel } from "../features/collection/CollectionPanel";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -1594,6 +1595,8 @@ export function JobsPage({ messages, language }: JobsPageProps) {
 
       {apiError ? <Typography.Text type="danger">{t.apiLoadFailed}</Typography.Text> : null}
 
+      <CollectionPanel language={language} />
+
       <Row gutter={[16, 16]}>
         {statCards.map((item) => (
           <Col xs={24} sm={12} xl={6} key={item.label}>
@@ -2026,7 +2029,7 @@ export function JobsPage({ messages, language }: JobsPageProps) {
               <DetailItem label={t.missingCount} value={formatInteger(selectedDetailJob.missing_count)} />
               <DetailItem label={language === "zh-TW" ? "恢復次數" : "Recoveries"} value={selectedDetailJob.recovery_count} />
               {selectedDetailJob.recovery_reason && <DetailItem label={language === "zh-TW" ? "最近恢復原因" : "Recovery reason"} value={recoveryMessage(selectedDetailJob.recovery_reason, language)} />}
-              {selectedDetailJob.waiting_reason && <DetailItem label={language === "zh-TW" ? "等待原因" : "Waiting for"} value={language === "zh-TW" ? "此市場的任務完成，或其他執行名額釋出" : "Market availability or a free worker"} />}
+              {selectedDetailJob.waiting_reason && <DetailItem label={language === "zh-TW" ? "等待原因" : "Waiting for"} value={selectedDetailJob.waiting_reason === "collection_policy_market_or_slot" ? (language === "zh-TW" ? "等待收集政策、市場狀態或執行名額；詳見全市場收集面板" : "Waiting for collection policy, market state or worker capacity; see the collection panel") : (language === "zh-TW" ? "此市場的任務完成，或其他執行名額釋出" : "Market availability or a free worker")} />}
 
               <DetailItem
                 label={t.retryCount}

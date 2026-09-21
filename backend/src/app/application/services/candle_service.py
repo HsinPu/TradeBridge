@@ -4,6 +4,7 @@ from dataclasses import dataclass, replace
 from app.application.models.candle_query import CandleFetchQuery, CandleListItem
 from app.application.ports.candle_repository import CandleRepository
 from app.application.ports.market_data_provider import MarketDataProviderResolver
+from app.application.services.candle_continuity import missing_open_ranges, repository_open_times
 from app.application.services.candle_fetch_planner import (
     datetime_to_ms,
     ms_to_iso,
@@ -286,52 +287,11 @@ class CandleService:
         start_open_time_ms: int,
         end_open_time_ms: int,
     ) -> list[MissingCandleRange]:
-        actual_open_times = set(
-            self._repository.list_open_time_ms(
-                provider=provider,
-                market_pair=market_pair,
-                interval=interval,
-                start_time_ms=start_open_time_ms,
-                end_time_ms=end_open_time_ms,
-            )
+        actual = repository_open_times(
+            self._repository, provider=provider, market_pair=market_pair, interval=interval,
+            start_time_ms=start_open_time_ms, end_time_ms=end_open_time_ms,
         )
-
-        missing_ranges: list[MissingCandleRange] = []
-        current_start: int | None = None
-        current_end: int | None = None
-        current_count = 0
-
-        expected_time = start_open_time_ms
-        while expected_time <= end_open_time_ms:
-            if expected_time not in actual_open_times:
-                if current_start is None:
-                    current_start = expected_time
-                current_end = expected_time
-                current_count += 1
-            elif current_start is not None and current_end is not None:
-                missing_ranges.append(
-                    MissingCandleRange(
-                        start_open_time_ms=current_start,
-                        end_open_time_ms=current_end,
-                        start_open_time=ms_to_iso(current_start) or "",
-                        end_open_time=ms_to_iso(current_end) or "",
-                        missing_count=current_count,
-                    )
-                )
-                current_start = None
-                current_end = None
-                current_count = 0
-            expected_time += interval_ms
-
-        if current_start is not None and current_end is not None:
-            missing_ranges.append(
-                MissingCandleRange(
-                    start_open_time_ms=current_start,
-                    end_open_time_ms=current_end,
-                    start_open_time=ms_to_iso(current_start) or "",
-                    end_open_time=ms_to_iso(current_end) or "",
-                    missing_count=current_count,
-                )
-            )
-
-        return missing_ranges
+        return [MissingCandleRange(start, end, ms_to_iso(start) or "", ms_to_iso(end) or "",
+                    (end - start) // interval_ms + 1)
+                for start, end in missing_open_ranges(actual, start=start_open_time_ms,
+                    end=end_open_time_ms, step=interval_ms)]

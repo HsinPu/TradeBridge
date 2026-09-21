@@ -9,6 +9,7 @@ import httpx
 
 from app.application.models.candle_query import CandleAvailabilityQuery, CandleBatchQuery
 from app.application.models.provider_market import ProviderMarket
+from app.application.models.market_catalog import CatalogSnapshot, CatalogSymbol
 from app.domain.entities.candle import Candle
 from app.domain.value_objects.market_pair import MarketPair
 from app.infrastructure.external.kline_mapper import map_provider_kline_to_candle
@@ -27,6 +28,15 @@ class BinanceMarketDataClient:
         self._get_json_with_retry(fetch_id="ping", batch_index=0, path="/api/v3/ping",
                                   params={}, retry_attempts=0, retry_delay_seconds=0)
         return True
+
+    def market_catalog(self) -> CatalogSnapshot:
+        # Do not restrict status or truncate: absence is meaningful only in a
+        # validated complete snapshot. The interactive search stays unchanged.
+        payload = self._get_json_with_retry(
+            fetch_id="market-catalog", batch_index=0, path="/api/v3/exchangeInfo",
+            params={"permissions": "SPOT"}, retry_attempts=2, retry_delay_seconds=0.25,
+        )
+        return _map_catalog_snapshot(payload)
 
 
     def discover_markets(
@@ -263,6 +273,43 @@ class BinanceMarketDataClient:
             status_code = exc.response.status_code
             return status_code == 429 or status_code >= 500
         return isinstance(exc, httpx.TransportError)
+
+
+def _map_catalog_snapshot(payload: object) -> CatalogSnapshot:
+    if not isinstance(payload, dict) or not isinstance(payload.get("symbols"), list):
+        raise ValueError("Incomplete Binance market catalog: symbols list is required.")
+    server_time = payload.get("serverTime")
+    if isinstance(server_time, bool) or not isinstance(server_time, int) or server_time < 0:
+        raise ValueError("Invalid Binance market catalog server time.")
+    symbols: list[CatalogSymbol] = []
+    seen: set[str] = set()
+    for item in payload["symbols"]:
+        if not isinstance(item, dict):
+            raise ValueError("Invalid Binance catalog entry.")
+        values = [item.get(key) for key in ("symbol", "baseAsset", "quoteAsset", "status")]
+        if any(not isinstance(value, str) or not value.strip() for value in values):
+            raise ValueError("Incomplete Binance catalog entry.")
+        symbol, base, quote, status = (value.strip().upper() for value in values)
+        if symbol != base + quote or any(c in base + quote for c in "/-"):
+            raise ValueError(f"Unsupported catalog market identity: {symbol}.")
+        allowed = item.get("isSpotTradingAllowed")
+        if not isinstance(allowed, bool) or symbol in seen:
+            raise ValueError(f"Invalid or duplicate catalog symbol: {symbol}.")
+        seen.add(symbol)
+        symbols.append(CatalogSymbol(symbol, base, quote, status, allowed))
+    if not symbols:
+        raise ValueError("Empty Binance catalog cannot replace the last valid snapshot.")
+    weight_limit = None
+    limits = payload.get("rateLimits", [])
+    if not isinstance(limits, list):
+        raise ValueError("Invalid Binance rate limits.")
+    for limit in limits:
+        if (isinstance(limit, dict) and limit.get("rateLimitType") == "REQUEST_WEIGHT"
+                and limit.get("interval") == "MINUTE" and limit.get("intervalNum") == 1):
+            value = limit.get("limit")
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                weight_limit = value
+    return CatalogSnapshot(tuple(symbols), server_time, weight_limit)
 
 
 def _map_exchange_info_symbols(

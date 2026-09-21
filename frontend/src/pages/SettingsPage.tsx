@@ -1,3 +1,4 @@
+import { CatalogPanel } from "../features/collection/CatalogPanel";
 import {
   ApiOutlined,
   BellOutlined,
@@ -1202,6 +1203,7 @@ export function SettingsPage({ messages, language, onLanguageChange }: SettingsP
       </div>
 
       <section className="settings-grid">
+        <div style={{ gridColumn: "1 / -1" }}><CatalogPanel language={language} /></div>
         <div className="settings-main-stack">
           <Card
             title={<SectionTitle icon={<DatabaseOutlined />} title={t.dataSource} />}

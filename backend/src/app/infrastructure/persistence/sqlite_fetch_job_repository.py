@@ -658,7 +658,8 @@ class SQLiteFetchJobRepository:
             recovery_count=row["recovery_count"],
             recovery_reason=row["recovery_reason"],
             attempt_count=row["attempt_count"],
-            waiting_reason="waiting_for_market_or_slot" if row["status"] == "pending" else None,
+            waiting_reason=("collection_policy_market_or_slot" if row["trigger_type"].startswith("collection_")
+                else "waiting_for_market_or_slot") if row["status"] == "pending" else None,
         )
 
 

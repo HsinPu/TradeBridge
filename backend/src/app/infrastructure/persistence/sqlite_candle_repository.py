@@ -1,6 +1,8 @@
 from app.infrastructure.persistence.sqlite_connection import transactional
 from pathlib import Path
 import sqlite3
+from hashlib import sha256
+from collections.abc import Iterator
 
 from app.application.models.candle_query import CandleListItem
 from app.domain.entities.candle import Candle
@@ -18,6 +20,9 @@ class SQLiteCandleRepository:
             database_path.parent.mkdir(parents=True, exist_ok=True)
 
         with self._connect() as connection:
+            connection.execute("""CREATE TABLE IF NOT EXISTS candle_sources (
+                id TEXT PRIMARY KEY, uri TEXT NOT NULL, sha256 TEXT NOT NULL,
+                timestamp_unit TEXT NOT NULL, verified_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS candles (
@@ -72,6 +77,23 @@ class SQLiteCandleRepository:
                 DROP INDEX IF EXISTS idx_candles_provider_symbol_interval_time_desc
                 """
             )
+            if "source_id" not in {r["name"] for r in connection.execute("PRAGMA table_info(candles)")}:
+                connection.execute("ALTER TABLE candles ADD COLUMN source_id TEXT REFERENCES candle_sources(id)")
+            connection.execute("""CREATE TABLE IF NOT EXISTS candle_revisions (
+                id INTEGER PRIMARY KEY, provider TEXT NOT NULL, market_type TEXT NOT NULL,
+                exchange_symbol TEXT NOT NULL, interval TEXT NOT NULL, open_time_ms INTEGER NOT NULL,
+                old_source_id TEXT, new_source_id TEXT, old_payload TEXT NOT NULL, new_payload TEXT NOT NULL,
+                changed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_candle_revisions_market ON candle_revisions(exchange_symbol,id)")
+            connection.execute("""CREATE TRIGGER IF NOT EXISTS candle_revision_audit AFTER UPDATE ON candles
+                WHEN OLD.open_price!=NEW.open_price OR OLD.high_price!=NEW.high_price OR OLD.low_price!=NEW.low_price
+                  OR OLD.close_price!=NEW.close_price OR OLD.base_volume!=NEW.base_volume OR OLD.quote_volume!=NEW.quote_volume
+                  OR OLD.trade_count!=NEW.trade_count OR OLD.taker_buy_base_volume!=NEW.taker_buy_base_volume
+                  OR OLD.taker_buy_quote_volume!=NEW.taker_buy_quote_volume OR OLD.close_time_ms!=NEW.close_time_ms
+                BEGIN INSERT INTO candle_revisions(provider,market_type,exchange_symbol,interval,open_time_ms,
+                    old_source_id,new_source_id,old_payload,new_payload)
+                    VALUES (OLD.provider,OLD.market_type,OLD.exchange_symbol,OLD.interval,OLD.open_time_ms,
+                        OLD.source_id,NEW.source_id,OLD.raw_payload_json,NEW.raw_payload_json); END""")
 
     @transactional
     def upsert_many(self, candles: list[Candle]) -> int:
@@ -110,6 +132,8 @@ class SQLiteCandleRepository:
             )
             if candles:
                 self._upsert_many(connection=connection, candles=candles)
+            if interval == "1m" and provider == "binance" and market_type == "spot":
+                self._bump_minute_revision(connection, {exchange_symbol})
         return len(candles)
 
     def list_candles(
@@ -315,9 +339,16 @@ class SQLiteCandleRepository:
         start_time_ms: int,
         end_time_ms: int,
     ) -> list[int]:
+        return list(self.iter_open_time_ms(provider=provider, market_pair=market_pair, interval=interval,
+            start_time_ms=start_time_ms, end_time_ms=end_time_ms))
+
+    def iter_open_time_ms(
+        self, *, provider: str, market_pair: str, interval: str,
+        start_time_ms: int, end_time_ms: int,
+    ) -> Iterator[int]:
         pair = MarketPair.parse(market_pair)
         with self._connect() as connection:
-            rows = connection.execute(
+            cursor = connection.execute(
                 """
                 SELECT open_time_ms
                 FROM candles
@@ -328,8 +359,10 @@ class SQLiteCandleRepository:
                 ORDER BY open_time_ms ASC
                 """,
                 (provider, pair.exchange_symbol_for(provider), interval, start_time_ms, end_time_ms),
-            ).fetchall()
-        return [int(row["open_time_ms"]) for row in rows]
+            )
+            while rows := cursor.fetchmany(2000):
+                for row in rows:
+                    yield int(row["open_time_ms"])
 
     def _connect(self) -> sqlite3.Connection:
         return connect_sqlite(self._database_path)
@@ -355,6 +388,17 @@ class SQLiteCandleRepository:
         return filters, params
 
     def _upsert_many(self, *, connection: sqlite3.Connection, candles: list[Candle]) -> None:
+        sources = {}
+        values = []
+        for candle in candles:
+            source_id = None
+            if candle.source_uri:
+                if not candle.source_sha256 or candle.source_timestamp_unit not in {"ms", "us"}:
+                    raise ValueError("Archive candles require verified source metadata")
+                source_id = sha256(f"{candle.source_uri}\n{candle.source_sha256}\n{candle.source_timestamp_unit}".encode()).hexdigest()
+                sources[source_id] = (source_id, candle.source_uri, candle.source_sha256, candle.source_timestamp_unit)
+            values.append((*self._to_row_values(candle), source_id))
+        connection.executemany("INSERT OR IGNORE INTO candle_sources(id,uri,sha256,timestamp_unit) VALUES (?,?,?,?)", sources.values())
         connection.executemany(
             """
             INSERT INTO candles (
@@ -378,9 +422,10 @@ class SQLiteCandleRepository:
                 taker_buy_quote_volume,
                 unused_value,
                 raw_payload_json,
+                source_id,
                 fetched_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(provider, market_type, exchange_symbol, interval, open_time_ms)
             DO UPDATE SET
                 market_pair = excluded.market_pair,
@@ -398,11 +443,22 @@ class SQLiteCandleRepository:
                 taker_buy_quote_volume = excluded.taker_buy_quote_volume,
                 unused_value = excluded.unused_value,
                 raw_payload_json = excluded.raw_payload_json,
+                source_id = excluded.source_id,
                 fetched_at = excluded.fetched_at,
                 updated_at = CURRENT_TIMESTAMP
             """,
-            [self._to_row_values(candle) for candle in candles],
+            values,
         )
+        self._bump_minute_revision(connection, {c.exchange_symbol for c in candles
+            if c.provider == "binance" and c.market_type == "spot" and c.interval == "1m"})
+
+    @staticmethod
+    def _bump_minute_revision(connection, symbols):
+        # Standalone repository adapters may run without the full application schema.
+        if not symbols or not connection.execute("SELECT 1 FROM sqlite_master WHERE name='minute_revisions'").fetchone():
+            return
+        connection.executemany("""INSERT INTO minute_revisions VALUES (?,1)
+            ON CONFLICT(exchange_symbol) DO UPDATE SET revision=revision+1""", [(s,) for s in symbols])
 
     def _row_to_candle(self, row: sqlite3.Row) -> Candle:
         return Candle(

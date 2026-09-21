@@ -12,6 +12,7 @@ from app.application.services.execution_control import execution_check
 from app.infrastructure.persistence.sqlite_connection import (
     connect_sqlite, sqlite_transaction, write_guard,
 )
+from app.infrastructure.persistence.collection_gate import collection_admission_sql, collection_allowed, has_collection_schema
 
 
 class SQLiteJobExecutionStore:
@@ -22,6 +23,7 @@ class SQLiteJobExecutionStore:
         self._clock = clock
         self._gate = RLock()
         self._maintenance = Event()
+        self._claim_turn = 0
 
     def _now(self):
         return int(self._clock() * 1000)
@@ -67,14 +69,25 @@ class SQLiteJobExecutionStore:
             active = db.execute("SELECT COUNT(*) FROM fetch_jobs WHERE execution_token IS NOT NULL").fetchone()[0]
             if active >= self.max_workers:
                 return None
+            catalog_available = has_collection_schema(db)
+            collection_filter = " AND " + collection_admission_sql() if catalog_available else ""
+            # Fair turns for interactive, recent, interactive, historical work.
+            # Empty turns favor recent data before historical work.
+            preferred = ("manual", "collection_tail", "manual", "collection_history")[self._claim_turn % 4]
             row = db.execute("""SELECT j.id FROM fetch_jobs j WHERE j.status='pending'
                 AND j.execution_token IS NULL AND (? IS NULL OR j.id=?)
                 AND NOT EXISTS (SELECT 1 FROM fetch_jobs a WHERE a.execution_token IS NOT NULL
                     AND a.provider=j.provider AND a.market_type=j.market_type
                     AND a.exchange_symbol=j.exchange_symbol)
-                ORDER BY j.queued_at_ms, j.id LIMIT 1""", (job_id, job_id)).fetchone()
+                """ + collection_filter + """ ORDER BY CASE
+                    WHEN ?='manual' AND j.trigger_type NOT LIKE 'collection_%' THEN 0
+                    WHEN j.trigger_type=? THEN 0
+                    WHEN j.trigger_type NOT LIKE 'collection_%' THEN 1
+                    WHEN j.trigger_type='collection_tail' THEN 2 ELSE 3 END,
+                    j.queued_at_ms, j.id LIMIT 1""", (job_id, job_id, preferred, preferred)).fetchone()
             if row is None:
                 return None
+            self._claim_turn += 1
             token = uuid4().hex
             db.execute("""UPDATE fetch_jobs SET status='running', execution_token=?, owner=?,
                 lease_until_ms=?, attempt_count=attempt_count+1,
@@ -106,6 +119,8 @@ class SQLiteJobExecutionStore:
     def scope(self, job_id, token, stop_event):
         def guard(db):
             self._validate(db, job_id, token)
+            if not collection_allowed(db, job_id):
+                raise ExecutionInterrupted("Collection paused, excluded, or market unavailable")
 
         def check():
             if stop_event is not None and stop_event.is_set():
@@ -114,6 +129,8 @@ class SQLiteJobExecutionStore:
                 row = self._validate(db, job_id, token)
                 if row["status"] != "running":
                     raise ExecutionInterrupted("Job control requested")
+                if not collection_allowed(db, job_id):
+                    raise ExecutionInterrupted("Collection paused, excluded, or market unavailable")
 
         guard_token = write_guard.set(guard)
         check_token = execution_check.set(check)

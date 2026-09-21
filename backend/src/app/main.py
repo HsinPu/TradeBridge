@@ -11,6 +11,8 @@ from app.core.settings import Settings, get_settings
 from app.infrastructure.persistence.sqlite_database import initialize_sqlite_database
 from app.infrastructure.scheduler.schedule_runner import ScheduleRunner
 from app.infrastructure.scheduler.job_runner import JobRunner
+from app.infrastructure.scheduler.catalog_runner import CatalogRunner
+from app.infrastructure.scheduler.collection_runner import CollectionRunner
 from app.application.ports.job_execution_store import JobConflict, MaintenanceActive
 from fastapi.responses import JSONResponse
 
@@ -23,7 +25,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("Starting %s in %s environment", settings.app_name, settings.app_env)
     initialize_sqlite_database(settings.database_path)
     logger.info("SQLite database ready at %s", settings.database_path)
-    from app.api.v1.dependencies import get_candle_fetch_job_service, get_schedule_service, get_job_execution_store
+    from app.api.v1.dependencies import get_candle_fetch_job_service, get_schedule_service, get_job_execution_store, get_market_catalog_service, get_collection_service
 
     # Initialize shared dependencies before worker threads can access them.
     get_candle_fetch_job_service()
@@ -34,6 +36,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     jobs = JobRunner(store=store, service_factory=get_candle_fetch_job_service)
     app.state.job_runner = jobs
     jobs.start()
+    catalog = CatalogRunner(get_market_catalog_service())
+    catalog.start()
+    collection = CollectionRunner(get_collection_service())
+    collection.start()
     runner: ScheduleRunner | None = None
     if settings.scheduler_enabled:
         runner = ScheduleRunner(
@@ -44,6 +50,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        collection.stop()
+        catalog.stop()
         if runner is not None:
             runner.stop()
         jobs.stop()
